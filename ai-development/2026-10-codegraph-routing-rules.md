@@ -1,0 +1,235 @@
+# codegraph MCP 코드 탐색 라우팅 규칙과 설계 근거
+
+> 그래프는 관계를 물을 때만 쓰고, 나머지는 grep·Read가 맡는다
+
+- 작성일: 2026-10-31
+- 상태: 초안 (사내 Kiro 환경 검증 전)
+- 대상: Kiro(IDE·CLI) + codegraph MCP 서버, Java/Spring 프로젝트, 메인 저장소 안 `.worktrees/` 구조
+- 기준 버전: codegraph 1.6.2
+
+## 목차
+
+- [TL;DR](#tldr)
+- [1. 배경](#1-배경)
+- [2. 실측 결과](#2-실측-결과)
+- [3. 설계 결정](#3-설계-결정)
+- [4. 라우팅 규칙 (steering 원문)](#4-라우팅-규칙-steering-원문)
+- [5. 규칙별 근거](#5-규칙별-근거)
+- [6. 미검증 사항](#6-미검증-사항)
+- [7. 측정 환경](#7-측정-환경)
+- [변경 이력](#변경-이력)
+
+## TL;DR
+
+- **`codegraph_explore`는 질문과 관계없이 매번 약 6,200 토큰을 반환합니다.** 같은 질문에 `callers`는 약 40 토큰, `impact`는 약 145 토큰이었습니다. graph 인덱싱 자체보다 "큰 응답 하나만 주는 도구 설계"가 컨텍스트 낭비의 원인입니다.
+- **도구는 `explore`, `callers`, `impact` 3개로 고정하고, 언제 무엇을 쓸지는 steering 규칙으로 제한합니다.** 도구 세트를 메인 저장소와 워크트리에 다르게 주는 방식은 `.worktrees/` 구조에서 MCP 프로세스가 1개만 떠서 불가능합니다.
+- **`explore`는 이름을 모르는 낯선 영역을 처음 파악할 때만, 주제당 1회 씁니다.** 이름을 알면 좁은 도구가 컨텍스트를 3.5배 덜 씁니다. 다만 이름을 모를 때는 왕복을 줄이는 `explore`가 유리해서 끄지는 않습니다.
+- **워크트리 작업에서는 `projectPath`를 반드시 넘겨야 합니다.** 생략하면 메인 저장소의 인덱스를 조회해 현재 브랜치와 다른 코드를 근거로 판단하게 됩니다.
+- **Spring 특유의 연결(AOP, 이벤트, MyBatis XML 등)을 그래프가 놓치는지는 아직 검증하지 않았습니다.** 사내 코드로 확인이 필요합니다.
+
+## 1. 배경
+
+코드를 tree-sitter로 파싱해 로컬 SQLite 그래프로 만들고 MCP로 에이전트에 구조 정보를 주는 도구로 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)와 [codegraph](https://github.com/colbymchenry/codegraph)를 비교했습니다. codebase-memory-mcp는 MCP 도구 17개, Cypher 쿼리, 인프라 설정까지 그래프화하는 넓은 플랫폼입니다. codegraph는 기본으로 `explore` 도구 하나만 노출하는 좁은 도구입니다.
+
+폐쇄망 환경에서는 설치 경로가 결정적이었습니다. codegraph는 플랫폼별 번들을 npm `optionalDependencies`로 받으므로 사내 Nexus npm 프록시로 설치할 수 있습니다. codebase-memory-mcp는 npm `postinstall`이 GitHub Releases에서 바이너리를 내려받아서 그대로는 설치되지 않습니다.
+
+graph 인덱싱은 전체 구조 파악과 호출 체인 추적에는 강하지만, 경로를 아는 파일이나 단순 문자열 검색에서는 grep·Read보다 비쌉니다. 그래서 도구를 하나로 몰지 않고 질문 유형별로 나누는 라우팅 규칙을 두기로 했습니다.
+
+## 2. 실측 결과
+
+공개 Spring Boot 프로젝트를 codegraph로 인덱싱하고 MCP 도구를 직접 호출해 응답 크기를 쟀습니다. 토큰은 글자 수 ÷ 4로 어림했습니다. 측정 조건은 [7. 측정 환경](#7-측정-환경)에 있습니다.
+
+### 2.1 질문 유형별 응답 크기
+
+| 질문 | 좁은 도구 | `explore` | grep |
+| --- | --- | --- | --- |
+| `getAdminByUsername`(고유한 이름) 호출자 | callers 약 40 tok | 약 6,200 tok | 5줄, 약 170 tok |
+| `UmsAdminService.delete`(흔한 이름) 호출자 | callers 약 40 tok, 정답 1건 | 약 6,200 tok | 31줄 중 관련 1줄, 약 1,100 tok |
+| `deleteBrand`(오버로드) 영향도 | impact 약 145 tok, HTTP 라우트 포함 | 약 6,200 tok | 10줄, 약 300 tok |
+| 로그인 메서드 하나 읽기 | node 약 470 tok | 약 6,200 tok | – |
+| 파일 하나 읽기 | node 약 3,000 tok | – | Read 약 2,800 tok |
+
+### 2.2 흐름 질문 (관리자 로그인과 JWT 발급)
+
+| 방식 | 호출 수 | 결과 크기 |
+| --- | --- | --- |
+| 좁은 도구로 재구성 (node 4번 + callees 1번, 이름을 아는 상태) | 5번 | 합계 약 1,770 tok |
+| `explore` (심볼 이름을 넣은 질의) | 1번 | 약 6,200 tok |
+| `explore` (자연어 질의) | 1번 | 약 5,400 tok |
+
+### 2.3 고정 비용
+
+| 항목 | 크기 |
+| --- | --- |
+| 서버 지침 (MCP `initialize` 응답) | 6,718자 (약 1,700 tok) |
+| 도구 정의: explore / callers / impact | 1,786자 / 1,125자 / 1,057자 |
+| 도구 정의: node / search / callees | 2,951자 / 1,170자 / 1,081자 |
+
+### 2.4 관찰된 동작
+
+- **`explore`의 응답은 상한까지 채워집니다.** 질문 4개가 모두 약 24,900자였습니다.
+- **흔한 이름에서는 `explore`도 노이즈에 걸립니다.** "who calls UmsAdminService.delete"라고 질의하자 무관한 `SmsFlashPromotion*Controller.delete` 등을 단어 매칭으로 끌어왔습니다. 정답은 영향 범위 요약에만 있었습니다.
+- **자연어 질의는 핵심 구현을 빠뜨렸습니다.** `UmsAdminServiceImpl.login` 본문이 "Not shown" 목록으로 밀려났고, 그 자리는 `UmsAdminLoginLog`의 getter가 채웠습니다. 이름을 넣은 질의에서는 흐름과 `UmsAdminService.login → UmsAdminServiceImpl:98` 구현체 연결이 함께 나왔습니다.
+- **인터페이스 메서드의 `callers`는 구현체 내부의 자기 호출을 빠뜨립니다.** `UmsAdminService.getAdminByUsername`의 callers는 1건이었지만, `UmsAdminServiceImpl` 126행과 267행에서도 호출합니다.
+- **워크트리 DB는 메인 저장소의 데몬이 `projectPath`로 엽니다.** 워크트리에서 새 호출자를 추가하자, `projectPath`를 준 조회에는 약 1.5초 뒤 반영됐습니다(호출자 2건). `projectPath` 없이 조회하면 메인 DB 결과가 그대로 나왔습니다(1건).
+- **수정 직후에는 신선도 경고가 붙습니다.** 1.5초 뒤 조회에 "edited 1563ms ago, indexing in progress" 배너가 나왔고, 4초 뒤에는 사라졌습니다.
+- **`.worktrees/`가 gitignore에 제대로 등록되지 않으면 메인 DB가 오염됩니다.** 메인 데몬의 watcher가 워크트리에서 수정된 파일을 메인 DB에도 넣어 결과가 중복됐습니다.
+
+## 3. 설계 결정
+
+### 3.1 도구 3개 고정 (`CODEGRAPH_MCP_TOOLS=explore,callers,impact`)
+
+`callers`와 `impact`는 grep이 가장 약한 지점(흔한 이름, 인터페이스↔구현체, 오버로드)을 메웁니다. 두 도구를 켜는 고정 비용은 약 550 토큰이라 `explore` 호출 한 번만 피해도 회수됩니다.
+
+`search`는 Java 클래스명이 대체로 고유해서 grep으로 충분하다고 보고 제외했습니다. `node`는 파일 모드 결과가 Read와 크기가 같고(12,037자 대 원본 11,227자) 도구 정의가 가장 커서 제외했습니다.
+
+codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른다는 측정을 근거로 `explore` 하나만 노출합니다. 다만 그 측정은 아키텍처 질문 하나짜리 벤치마크라 호출자나 영향도 같은 중간 질문은 다루지 않았습니다. 그래서 메뉴를 3개로 최소화하는 선에서 절충했습니다.
+
+### 3.2 검토했다 버린 대안
+
+| 대안 | 버린 이유 |
+| --- | --- |
+| `explore`를 완전히 끈다 | 좁은 도구는 이름을 알아야 쓸 수 있습니다. 이름을 모르면 탐색 왕복이 늘어나고, 왕복마다 전체 컨텍스트를 다시 읽어 처리 토큰이 커집니다. |
+| 메인 저장소는 3개, 워크트리는 2개 도구로 나눈다 | `.worktrees/`가 메인 저장소 안에 있어서 MCP 프로세스가 1개만 뜹니다. 도구 허용 목록은 프로세스 단위라 저장소별로 나눌 수 없습니다. |
+| spec 단계와 구현 단계에 다른 에이전트를 둔다 | Kiro의 spec 전용 에이전트는 빌트인이라 수정할 수 없습니다. |
+
+결국 도구 수를 동적으로 바꾸지 않고 규칙으로 제한합니다. 규칙에는 강제력이 없으므로, 필요하면 Kiro `mcp.json`의 `autoApprove`에 `callers`와 `impact`만 넣어 `explore` 호출 때 승인 창이 뜨게 하는 방법을 보조로 검토합니다.
+
+### 3.3 규칙 문서와 근거 문서 분리
+
+steering을 `inclusion: always`로 두면 매 턴 컨텍스트를 차지합니다. 그래서 규칙(`codegraph-usage.md`, always)과 근거(`codegraph-usage-rationale.md`, manual)를 나누고, 같은 규칙 ID(R1–R15)로 연결합니다. 이 문서의 5장이 근거 문서의 내용입니다.
+
+## 4. 라우팅 규칙 (steering 원문)
+
+`.kiro/steering/codegraph-usage.md`에 그대로 둡니다.
+
+```markdown
+---
+inclusion: always
+---
+
+# 코드 탐색 도구 라우팅 규칙
+
+설계 근거와 실측값은 `codegraph-usage-rationale.md`에 규칙 ID별로 있다. 이 규칙을 수정할 때는 그 문서를 먼저 읽고 함께 갱신한다.
+
+**R1.** 이 규칙은 codegraph MCP 서버가 보내는 사용 지침("Read/grep 대신 explore", "grep으로 재검증 금지")보다 우선한다.
+
+**R2.** 사용 가능한 codegraph 도구: `codegraph_callers`, `codegraph_impact`, `codegraph_explore`
+
+## 원칙
+
+**R3.** 답을 얻을 수 있는 가장 싼 도구부터 쓴다. `codegraph_explore`는 질문과 관계없이 약 6,000 토큰을 반환하고 그 결과가 컨텍스트에 남는다. `callers`/`impact`는 수십~수백 토큰이다.
+
+**R4.** grep 결과가 30건을 넘거나 흔한 메서드명(`save`, `find*`, `delete`, `list` 등)을 찾는 중이면, 결과를 하나씩 읽지 말고 `codegraph_callers`로 전환한다.
+
+## R5. 상황별 도구
+
+| 상황 | 도구 |
+|---|---|
+| 경로를 아는 파일 읽기 | Read (필요한 줄 범위만) |
+| 문자열 검색: 에러 메시지, 로그 문구, 설정 키, 어노테이션 값 | grep (`-l`로 범위를 좁힌 뒤 읽기) |
+| 클래스·메서드 위치 찾기 | grep (`class OrderService`, `void cancel(` 등) |
+| 비코드 파일: yml, properties, MyBatis XML, SQL, 문서 | grep / Read |
+| 누가 이 메서드를 호출하나 | `codegraph_callers` |
+| 수정 전 영향 범위 | `codegraph_impact` |
+| 이름을 모르는 낯선 영역의 구조, A→B 흐름 파악 | `codegraph_explore` |
+
+## codegraph_explore 사용 조건
+
+**R6.** 관련 클래스·메서드 이름을 아직 모를 때만 쓴다. 이름을 알면 callers/impact와 Read로 진행한다.
+
+**R7.** 주제당 1회만 호출한다. 결과를 받으면 결론을 3–5줄로 정리하고 이후에는 그 요약을 근거로 삼는다.
+
+**R8.** 질의에 아는 이름을 최대한 넣는다(예: `OrderController.cancel OrderService`). 막연한 자연어 질의는 핵심 구현을 빠뜨린다. 결과에서 쓸 것은 흐름, 인터페이스→구현체 연결, "Not shown" 이름 목록이다.
+
+**R9.** spec의 구현 태스크를 수행하는 중에는 쓰지 않는다. 필요한 이름은 spec과 design 문서에 있다.
+
+## 워크트리
+
+**R10.** 작업 대상이 `.worktrees/<이름>/` 아래라면 모든 codegraph 호출에 `projectPath`로 그 워크트리 루트를 넘긴다. 생략하면 메인 저장소의 인덱스를 조회하게 된다.
+
+## 검증 (Spring)
+
+**R11.** 인터페이스 메서드의 `callers`에는 구현체 내부의 자기 호출이 빠진다. 영향 범위를 볼 때는 구현체 심볼도 함께 조회하거나 `impact`를 쓴다.
+
+**R12.** 변경의 영향 범위를 확정할 때만 메서드명·빈 이름으로 grep 교차 확인한다. 그래프가 놓칠 수 있는 연결은 다음과 같다.
+- 프록시/AOP(`@Transactional`, `@Async`, Aspect), 리플렉션
+- `ApplicationEventPublisher` → `@EventListener` / `@TransactionalEventListener`
+- `@ConditionalOnProperty`, `@Profile`, `@Qualifier`, `@Primary`, 구현체가 여럿인 인터페이스
+- MyBatis 매퍼 ↔ XML, JPA 쿼리 메서드 이름 규칙
+- 메서드 참조(`Foo::bar`), 문자열로 지정된 이름(SpEL, 스케줄러, 메시지 리스너)
+
+## 인덱스 신선도
+
+**R13.** 응답 첫머리에 `⚠️ Some files referenced below were edited since the last index sync` 배너가 있으면, 배너에 나온 파일만 Read로 직접 읽는다.
+
+**R14.** `auto-sync is DISABLED` 또는 `RECOVERING` 배너가 있으면 인덱스 전체를 믿지 말고 Read/grep으로 전환한다.
+
+**R15.** `.codegraph/`가 없다고 보고되면 그 프로젝트에는 codegraph를 쓰지 않는다. `codegraph init`은 직접 실행하지 않는다.
+```
+
+MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph",
+      "args": ["serve", "--mcp"],
+      "env": {
+        "CODEGRAPH_MCP_TOOLS": "explore,callers,impact",
+        "CODEGRAPH_TELEMETRY": "0"
+      }
+    }
+  }
+}
+```
+
+## 5. 규칙별 근거
+
+근거 태그는 다음과 같습니다.
+
+- **[실측]:** 2장에서 직접 잰 값
+- **[소스]:** codegraph 소스 코드를 확인한 내용
+- **[문서]:** codegraph README에서 확인한 내용
+- **[추정]:** 측정하지 않은 추론
+- **[판단]:** 트레이드오프를 보고 내린 선택
+
+| 규칙 | 근거 |
+| --- | --- |
+| R1. 서버 지침보다 우선 | [소스] codegraph는 MCP `initialize` 응답으로 "Read/grep 대신 explore를 써라", "경로를 아는 파일도 explore로 읽어라", "grep으로 재검증하지 마라"는 지침을 보냅니다(`src/mcp/server-instructions.ts`). 이 규칙과 정면으로 충돌합니다. [추정] Kiro가 이 지침을 모델에 어떻게 반영하는지는 확인하지 못했지만, 우선순위를 명시해 손해 볼 일은 없습니다. |
+| R2. 도구 3개 | [소스] 기본 설정은 `explore`만 노출합니다. [실측] 나머지 근거는 3.1절에 있습니다. |
+| R3. 가장 싼 도구부터 | [실측] `explore` 약 6,200 tok, `callers` 약 40 tok, `impact` 약 145 tok. [문서] codegraph README는 처리 토큰이 62% 줄지만 세션 끝 잔류 컨텍스트가 약 80% 늘어난다고 스스로 밝힙니다. |
+| R4. grep 30건 기준 | [실측] grep `\.delete(` 31줄 중 관련 1줄, callers는 정확히 1건. [판단] "30건"은 이 측정에서 잡은 경험칙이니 사내 코드에 맞춰 조정합니다. |
+| R5. 상황별 도구 | 파일 읽기: [실측] 그래프로 읽어도 Read와 크기가 같습니다. 문자열 검색: [추정] 그래프는 심볼 단위라 문자열을 찾지 않습니다. 위치 찾기: [추정] Java에서는 grep 결과가 적습니다. 비코드 파일: [문서] yml, properties, XML은 지원 언어 목록에 없습니다. 호출자·영향도: [실측] 2.1절. |
+| R6. 이름을 모를 때만 explore | [실측] 이름을 알면 좁은 도구 5번에 약 1,770 tok, `explore` 1번에 약 6,200 tok. [추정] 기본 컨텍스트를 2만 tok으로 가정하면 처리 토큰은 `explore` 쪽 약 4.6만, 좁은 도구 쪽 약 12.5만이라 이름을 모를 때는 `explore`가 유리합니다. |
+| R7. 주제당 1회 | [실측] 응답 하나가 약 6,200 tok이라 반복하면 누적됩니다. [소스] 호출 간 중복 제거(`CODEGRAPH_EXPLORE_DEDUP=1`)는 기본으로 꺼져 있어 같은 소스가 매번 다시 전송됩니다. |
+| R8. 질의에 이름 포함 | [실측] 자연어 질의는 핵심 구현을 빠뜨리고, 흔한 이름은 무관한 코드를 끌어왔습니다(2.4절). [소스] `explore`는 의미가 아니라 이름과 단어를 어휘적으로 매칭합니다. |
+| R9. spec 구현 중 금지 | [판단] 탐색은 spec·design 단계에서 끝내고, 구현 단계에서는 문서에 기록된 이름을 씁니다. 긴 구현 세션에 큰 응답이 쌓이는 것을 막기 위해서입니다. |
+| R10. 워크트리 projectPath | [실측] `projectPath`가 없으면 메인 DB를 조회합니다(2.4절). |
+| R11. 인터페이스·구현체 함께 조회 | [실측] 인터페이스 callers 1건, 실제 호출은 구현체 내부 2건이 더 있습니다. |
+| R12. 확정 시에만 grep 교차 확인 | [추정, 미검증] 정적 분석의 일반적 한계에 근거한 목록입니다. [문서] codegraph 자체 측정에서 Spring 라우트 인식률은 83.3%입니다. [판단] 매 탐색마다 재검증하는 비용을 피하려고 영향 범위 확정 시로 제한합니다. |
+| R13–R15. 인덱스 신선도 | [실측] 수정 1.5초 뒤 배너가 나오고 4초 뒤 사라졌습니다. [소스] DISABLED/RECOVERING 배너의 의미와 `init`을 사용자에게 맡기라는 내용은 서버 지침에 있습니다. |
+
+## 6. 미검증 사항
+
+| 항목 | 확인 방법 |
+| --- | --- |
+| Kiro가 codegraph 서버 지침을 모델에 반영하는지 (R1) | 규칙 없이 단순 조회를 시켜 보고 `explore`를 먼저 부르는지 관찰 |
+| 에이전트가 규칙대로 도구를 고르는지 (R3–R9) | 사내 대표 Spring 모듈로 질문 유형별 3–4개씩 실행해 호출 로그 확인 |
+| Spring 특유의 연결을 그래프가 놓치는지 (R12) | AOP, 이벤트 리스너, MyBatis XML이 있는 메서드에 `callers`·`impact`를 걸어 grep 결과와 비교. 잘 잡히는 항목은 목록에서 삭제 |
+| grep 30건 기준의 적정성 (R4) | 사내 코드에서 흔한 메서드명의 grep 결과 수 분포 확인 |
+| `autoApprove` 지원 여부 (3.2절) | 사내 Kiro 버전의 `mcp.json` 스키마 확인 |
+| `explore` 응답 상한과 인덱스 규모의 관계 | 사내 대형 저장소에서 응답 크기 측정 |
+
+## 7. 측정 환경
+
+- 대상: [macrozheng/mall](https://github.com/macrozheng/mall). Spring Boot와 MyBatis를 쓰고, Java 파일 524개, 인덱싱된 파일 651개입니다(노드 23,501개, 엣지 48,178개).
+- 도구: codegraph 1.6.2 Linux x64 번들. MCP stdio로 도구를 직접 호출했습니다.
+- 워크트리: 메인 저장소 안 `.worktrees/feat-a`(gitignore 등록)로 사내 구조를 재현했습니다.
+- 토큰은 글자 수 ÷ 4로 어림했습니다.
+- 한계: 응답 크기만 쟀고, 에이전트(Kiro)가 실제로 도구를 어떻게 고르는지는 측정하지 않았습니다. 중형 저장소 하나에서의 결과입니다.
+
+## 변경 이력
+
+- 2026-10-31: 초안. 3개 도구 고정과 라우팅 규칙 방식을 채택했습니다.
