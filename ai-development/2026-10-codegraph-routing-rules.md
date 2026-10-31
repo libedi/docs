@@ -13,10 +13,9 @@
 - [1. 배경](#1-배경)
 - [2. 실측 결과](#2-실측-결과)
 - [3. 설계 결정](#3-설계-결정)
-- [4. 라우팅 규칙 (steering 원문)](#4-라우팅-규칙-steering-원문)
-- [5. 규칙별 근거](#5-규칙별-근거)
-- [6. 미검증 사항](#6-미검증-사항)
-- [7. 측정 환경](#7-측정-환경)
+- [4. 규칙과 근거 파일](#4-규칙과-근거-파일)
+- [5. 미검증 사항](#5-미검증-사항)
+- [6. 측정 환경](#6-측정-환경)
 - [변경 이력](#변경-이력)
 
 ## TL;DR
@@ -37,7 +36,7 @@ graph 인덱싱은 전체 구조 파악과 호출 체인 추적에는 강하지�
 
 ## 2. 실측 결과
 
-공개 Spring Boot 프로젝트를 codegraph로 인덱싱하고 MCP 도구를 직접 호출해 응답 크기를 쟀습니다. 토큰은 글자 수 ÷ 4로 어림했습니다. 측정 조건은 [7. 측정 환경](#7-측정-환경)에 있습니다.
+공개 Spring Boot 프로젝트를 codegraph로 인덱싱하고 MCP 도구를 직접 호출해 응답 크기를 쟀습니다. 토큰은 글자 수 ÷ 4로 어림했습니다. 측정 조건은 [6. 측정 환경](#6-측정-환경)에 있습니다.
 
 ### 2.1 질문 유형별 응답 크기
 
@@ -97,76 +96,27 @@ codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른�
 
 ### 3.3 규칙 문서와 근거 문서 분리
 
-steering을 `inclusion: always`로 두면 매 턴 컨텍스트를 차지합니다. 그래서 규칙(`codegraph-usage.md`, always)과 근거(`codegraph-usage-rationale.md`, manual)를 나누고, 같은 규칙 ID(R1–R15)로 연결합니다. 이 문서의 5장이 근거 문서의 내용입니다.
+steering을 `inclusion: always`로 두면 매 턴 컨텍스트를 차지합니다. 그래서 규칙(`codegraph-usage.md`, always)과 근거(`codegraph-usage-rationale.md`, manual)를 나누고, 같은 규칙 ID(R1–R15)로 연결합니다. 두 파일은 4장에 있습니다.
 
-## 4. 라우팅 규칙 (steering 원문)
+## 4. 규칙과 근거 파일
 
-`.kiro/steering/codegraph-usage.md`에 그대로 둡니다.
+Kiro에 그대로 넣는 원본은 [`kiro-steering/`](kiro-steering/) 폴더의 두 파일입니다. 규칙과 근거를 이 노트에 복사해 두면 수정할 때 서로 어긋나므로, 원본은 두 파일로만 관리합니다.
 
-```markdown
----
-inclusion: always
----
+| 파일 | 넣을 위치 | inclusion | 내용 |
+| --- | --- | --- | --- |
+| [codegraph-usage.md](kiro-steering/codegraph-usage.md) | `.kiro/steering/` | always | 규칙 R1–R15 |
+| [codegraph-usage-rationale.md](kiro-steering/codegraph-usage-rationale.md) | `.kiro/steering/` | manual | 규칙별 근거와 태그([실측]/[소스]/[문서]/[추정]/[판단]), 측정 환경, 변경 이력 |
 
-# 코드 탐색 도구 라우팅 규칙
+규칙 구성은 다음과 같습니다.
 
-설계 근거와 실측값은 `codegraph-usage-rationale.md`에 규칙 ID별로 있다. 이 규칙을 수정할 때는 그 문서를 먼저 읽고 함께 갱신한다.
-
-**R1.** 이 규칙은 codegraph MCP 서버가 보내는 사용 지침("Read/grep 대신 explore", "grep으로 재검증 금지")보다 우선한다.
-
-**R2.** 사용 가능한 codegraph 도구: `codegraph_callers`, `codegraph_impact`, `codegraph_explore`
-
-## 원칙
-
-**R3.** 답을 얻을 수 있는 가장 싼 도구부터 쓴다. `codegraph_explore`는 질문과 관계없이 약 6,000 토큰을 반환하고 그 결과가 컨텍스트에 남는다. `callers`/`impact`는 수십~수백 토큰이다.
-
-**R4.** grep 결과가 30건을 넘거나 흔한 메서드명(`save`, `find*`, `delete`, `list` 등)을 찾는 중이면, 결과를 하나씩 읽지 말고 `codegraph_callers`로 전환한다.
-
-## R5. 상황별 도구
-
-| 상황 | 도구 |
-|---|---|
-| 경로를 아는 파일 읽기 | Read (필요한 줄 범위만) |
-| 문자열 검색: 에러 메시지, 로그 문구, 설정 키, 어노테이션 값 | grep (`-l`로 범위를 좁힌 뒤 읽기) |
-| 클래스·메서드 위치 찾기 | grep (`class OrderService`, `void cancel(` 등) |
-| 비코드 파일: yml, properties, MyBatis XML, SQL, 문서 | grep / Read |
-| 누가 이 메서드를 호출하나 | `codegraph_callers` |
-| 수정 전 영향 범위 | `codegraph_impact` |
-| 이름을 모르는 낯선 영역의 구조, A→B 흐름 파악 | `codegraph_explore` |
-
-## codegraph_explore 사용 조건
-
-**R6.** 관련 클래스·메서드 이름을 아직 모를 때만 쓴다. 이름을 알면 callers/impact와 Read로 진행한다.
-
-**R7.** 주제당 1회만 호출한다. 결과를 받으면 결론을 3–5줄로 정리하고 이후에는 그 요약을 근거로 삼는다.
-
-**R8.** 질의에 아는 이름을 최대한 넣는다(예: `OrderController.cancel OrderService`). 막연한 자연어 질의는 핵심 구현을 빠뜨린다. 결과에서 쓸 것은 흐름, 인터페이스→구현체 연결, "Not shown" 이름 목록이다.
-
-**R9.** spec의 구현 태스크를 수행하는 중에는 쓰지 않는다. 필요한 이름은 spec과 design 문서에 있다.
-
-## 워크트리
-
-**R10.** 작업 대상이 `.worktrees/<이름>/` 아래라면 모든 codegraph 호출에 `projectPath`로 그 워크트리 루트를 넘긴다. 생략하면 메인 저장소의 인덱스를 조회하게 된다.
-
-## 검증 (Spring)
-
-**R11.** 인터페이스 메서드의 `callers`에는 구현체 내부의 자기 호출이 빠진다. 영향 범위를 볼 때는 구현체 심볼도 함께 조회하거나 `impact`를 쓴다.
-
-**R12.** 변경의 영향 범위를 확정할 때만 메서드명·빈 이름으로 grep 교차 확인한다. 그래프가 놓칠 수 있는 연결은 다음과 같다.
-- 프록시/AOP(`@Transactional`, `@Async`, Aspect), 리플렉션
-- `ApplicationEventPublisher` → `@EventListener` / `@TransactionalEventListener`
-- `@ConditionalOnProperty`, `@Profile`, `@Qualifier`, `@Primary`, 구현체가 여럿인 인터페이스
-- MyBatis 매퍼 ↔ XML, JPA 쿼리 메서드 이름 규칙
-- 메서드 참조(`Foo::bar`), 문자열로 지정된 이름(SpEL, 스케줄러, 메시지 리스너)
-
-## 인덱스 신선도
-
-**R13.** 응답 첫머리에 `⚠️ Some files referenced below were edited since the last index sync` 배너가 있으면, 배너에 나온 파일만 Read로 직접 읽는다.
-
-**R14.** `auto-sync is DISABLED` 또는 `RECOVERING` 배너가 있으면 인덱스 전체를 믿지 말고 Read/grep으로 전환한다.
-
-**R15.** `.codegraph/`가 없다고 보고되면 그 프로젝트에는 codegraph를 쓰지 않는다. `codegraph init`은 직접 실행하지 않는다.
-```
+| 규칙 | 내용 |
+| --- | --- |
+| R1–R2 | 서버 지침보다 우선, 도구 3개 |
+| R3–R5 | 가장 싼 도구부터, grep 30건 기준, 상황별 도구 표 |
+| R6–R9 | explore 사용 조건: 이름을 모를 때만, 주제당 1회, 질의에 이름 포함, spec 구현 중 금지 |
+| R10 | 워크트리는 `projectPath` 필수 |
+| R11–R12 | Spring 검증: 인터페이스·구현체 함께 조회, 영향 범위 확정 시 grep 교차 확인 |
+| R13–R15 | 인덱스 신선도 배너 대응, `init` 직접 실행 금지 |
 
 MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 
@@ -185,33 +135,7 @@ MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 }
 ```
 
-## 5. 규칙별 근거
-
-근거 태그는 다음과 같습니다.
-
-- **[실측]:** 2장에서 직접 잰 값
-- **[소스]:** codegraph 소스 코드를 확인한 내용
-- **[문서]:** codegraph README에서 확인한 내용
-- **[추정]:** 측정하지 않은 추론
-- **[판단]:** 트레이드오프를 보고 내린 선택
-
-| 규칙 | 근거 |
-| --- | --- |
-| R1. 서버 지침보다 우선 | [소스] codegraph는 MCP `initialize` 응답으로 "Read/grep 대신 explore를 써라", "경로를 아는 파일도 explore로 읽어라", "grep으로 재검증하지 마라"는 지침을 보냅니다(`src/mcp/server-instructions.ts`). 이 규칙과 정면으로 충돌합니다. [추정] Kiro가 이 지침을 모델에 어떻게 반영하는지는 확인하지 못했지만, 우선순위를 명시해 손해 볼 일은 없습니다. |
-| R2. 도구 3개 | [소스] 기본 설정은 `explore`만 노출합니다. [실측] 나머지 근거는 3.1절에 있습니다. |
-| R3. 가장 싼 도구부터 | [실측] `explore` 약 6,200 tok, `callers` 약 40 tok, `impact` 약 145 tok. [문서] codegraph README는 처리 토큰이 62% 줄지만 세션 끝 잔류 컨텍스트가 약 80% 늘어난다고 스스로 밝힙니다. |
-| R4. grep 30건 기준 | [실측] grep `\.delete(` 31줄 중 관련 1줄, callers는 정확히 1건. [판단] "30건"은 이 측정에서 잡은 경험칙이니 사내 코드에 맞춰 조정합니다. |
-| R5. 상황별 도구 | 파일 읽기: [실측] 그래프로 읽어도 Read와 크기가 같습니다. 문자열 검색: [추정] 그래프는 심볼 단위라 문자열을 찾지 않습니다. 위치 찾기: [추정] Java에서는 grep 결과가 적습니다. 비코드 파일: [문서] yml, properties, XML은 지원 언어 목록에 없습니다. 호출자·영향도: [실측] 2.1절. |
-| R6. 이름을 모를 때만 explore | [실측] 이름을 알면 좁은 도구 5번에 약 1,770 tok, `explore` 1번에 약 6,200 tok. [추정] 기본 컨텍스트를 2만 tok으로 가정하면 처리 토큰은 `explore` 쪽 약 4.6만, 좁은 도구 쪽 약 12.5만이라 이름을 모를 때는 `explore`가 유리합니다. |
-| R7. 주제당 1회 | [실측] 응답 하나가 약 6,200 tok이라 반복하면 누적됩니다. [소스] 호출 간 중복 제거(`CODEGRAPH_EXPLORE_DEDUP=1`)는 기본으로 꺼져 있어 같은 소스가 매번 다시 전송됩니다. |
-| R8. 질의에 이름 포함 | [실측] 자연어 질의는 핵심 구현을 빠뜨리고, 흔한 이름은 무관한 코드를 끌어왔습니다(2.4절). [소스] `explore`는 의미가 아니라 이름과 단어를 어휘적으로 매칭합니다. |
-| R9. spec 구현 중 금지 | [판단] 탐색은 spec·design 단계에서 끝내고, 구현 단계에서는 문서에 기록된 이름을 씁니다. 긴 구현 세션에 큰 응답이 쌓이는 것을 막기 위해서입니다. |
-| R10. 워크트리 projectPath | [실측] `projectPath`가 없으면 메인 DB를 조회합니다(2.4절). |
-| R11. 인터페이스·구현체 함께 조회 | [실측] 인터페이스 callers 1건, 실제 호출은 구현체 내부 2건이 더 있습니다. |
-| R12. 확정 시에만 grep 교차 확인 | [추정, 미검증] 정적 분석의 일반적 한계에 근거한 목록입니다. [문서] codegraph 자체 측정에서 Spring 라우트 인식률은 83.3%입니다. [판단] 매 탐색마다 재검증하는 비용을 피하려고 영향 범위 확정 시로 제한합니다. |
-| R13–R15. 인덱스 신선도 | [실측] 수정 1.5초 뒤 배너가 나오고 4초 뒤 사라졌습니다. [소스] DISABLED/RECOVERING 배너의 의미와 `init`을 사용자에게 맡기라는 내용은 서버 지침에 있습니다. |
-
-## 6. 미검증 사항
+## 5. 미검증 사항
 
 | 항목 | 확인 방법 |
 | --- | --- |
@@ -222,7 +146,7 @@ MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 | `autoApprove` 지원 여부 (3.2절) | 사내 Kiro 버전의 `mcp.json` 스키마 확인 |
 | `explore` 응답 상한과 인덱스 규모의 관계 | 사내 대형 저장소에서 응답 크기 측정 |
 
-## 7. 측정 환경
+## 6. 측정 환경
 
 - 대상: [macrozheng/mall](https://github.com/macrozheng/mall). Spring Boot와 MyBatis를 쓰고, Java 파일 524개, 인덱싱된 파일 651개입니다(노드 23,501개, 엣지 48,178개).
 - 도구: codegraph 1.6.2 Linux x64 번들. MCP stdio로 도구를 직접 호출했습니다.
@@ -233,3 +157,4 @@ MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 ## 변경 이력
 
 - 2026-10-31: 초안. 3개 도구 고정과 라우팅 규칙 방식을 채택했습니다.
+- 2026-10-31: steering 원본 파일 2개를 `kiro-steering/`에 추가하고, 노트에 복사해 두었던 규칙 원문과 근거 표를 파일 링크로 대체했습니다.
