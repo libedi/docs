@@ -28,15 +28,16 @@ graph 인덱싱은 구조 파악과 호출 체인 추적에는 강하다. 반면
 - [소스] codegraph는 MCP `initialize` 응답으로 약 6,700자의 지침을 보낸다(`src/mcp/server-instructions.ts`). 그 안에 "Read/grep 대신 explore를 써라", "경로를 아는 파일도 explore로 읽어라", "grep으로 재검증하지 마라"가 있다. 이 문서의 규칙과 정면으로 충돌한다.
 - [추정] Kiro가 이 서버 지침을 모델에 어떻게 반영하는지는 확인하지 못했다. 반영되지 않더라도 우선순위를 명시해 두는 데 손해는 없다.
 
-### R2. 도구를 3개로 고정 (`CODEGRAPH_MCP_TOOLS=explore,callers,impact`)
+### R2. 도구를 4개로 고정 (`CODEGRAPH_MCP_TOOLS=explore,callers,callees,impact`)
 - [소스] 기본 설정에서는 explore만 노출된다. 다른 도구는 환경변수로 켜야 한다.
-- [실측] 도구 정의 크기는 callers 1,125자, impact 1,057자, explore 1,786자다. callers와 impact를 켜는 고정 비용(약 550 토큰)은 explore 호출 한 번(약 6,200 토큰)을 피하면 회수된다.
+- [실측] 도구 정의 크기는 callers 1,125자, callees 1,081자, impact 1,057자, explore 1,786자다. 좁은 도구 3개를 켜는 고정 비용(약 820 토큰)은 explore 호출 한 번(약 6,200 토큰)을 피하면 회수된다.
+- [실측] `callees`는 "X에서 Y까지" 흐름 질문에서 explore보다 정확하고 싸서 포함한다(R16 근거 참고). 초안(2026-10-31)에서는 근거 없이 빠져 있었다.
 - [실측] `search`는 제외했다. Java 클래스명은 대체로 고유해서 grep으로 충분하다고 판단했다.
 - [실측] `node`도 제외했다. 파일 모드 결과가 Read와 크기가 같았다(12,037자 대 원본 11,227자). 도구 정의는 2,951자로 가장 크다.
-- [문서] codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른다는 측정을 근거로 explore 하나만 노출했다. 다만 그 측정은 아키텍처 질문 하나짜리 벤치마크라, 호출자나 영향도 같은 중간 질문은 다루지 않았다. 그래서 메뉴를 3개로 최소화하는 선에서 절충했다 [판단].
+- [문서] codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른다는 측정을 근거로 explore 하나만 노출했다. 다만 그 측정은 아키텍처 질문 하나짜리 벤치마크라, 호출자나 영향도 같은 중간 질문은 다루지 않았다. 그래서 질문 유형마다 도구가 하나씩 대응하도록 메뉴를 4개로 최소화했다 [판단].
 
 ### R3. 가장 싼 도구부터
-- [실측] 질문이 달라도 explore 응답은 매번 약 24,900자(약 6,200 토큰)였다. 상한까지 채워 반환하는 구조로 보인다. 같은 질문에 callers는 147–164자(약 40 토큰), impact는 580자(약 145 토큰)였다.
+- [실측] 질문이 달라도 explore 응답은 매번 약 24,900자(약 6,200 토큰)였다. 상한까지 채워 반환하는 구조로 보인다. 같은 질문에 callers는 147–164자(약 40 토큰), impact는 580자(약 145 토큰), callees는 147–759자(약 36–189 토큰)였다.
 - [문서] codegraph README는 처리 토큰은 62% 줄지만 세션 끝 잔류 컨텍스트는 약 80% 늘어난다고 스스로 밝힌다.
 
 ### R4. grep 30건 기준과 callers로의 전환
@@ -49,6 +50,7 @@ graph 인덱싱은 구조 파악과 호출 체인 추적에는 강하다. 반면
 - 클래스·메서드 위치 → grep: [추정] Java에서는 결과가 적다. `search`를 제외한 결정(R2)과 연결된다.
 - 비코드 파일 → grep/Read: [문서] yml, properties, XML은 codegraph 지원 언어 목록에 없다.
 - 호출자 → callers: [실측] 약 40 토큰이고 흔한 이름에서도 정확했다.
+- 호출 흐름 → callees: [실측] R16 근거 참고.
 - 영향 범위 → impact: [실측] `PmsBrandService.deleteBrand`의 오버로드 2개를 합쳐서, `GET /brand/delete/{id}`와 `POST /brand/delete/batch` 라우트까지 약 145 토큰에 반환했다.
 
 ### R6. explore는 이름을 모를 때만
@@ -85,6 +87,7 @@ graph 인덱싱은 구조 파악과 호출 체인 추적에는 강하다. 반면
 - [실측] `UmsAdminService.getAdminByUsername`의 callers는 컨트롤러 1건만 반환했다. 그러나 grep으로 보면 `UmsAdminServiceImpl` 126행과 267행에서도 호출한다.
 
 ### R12. 영향 범위 확정 시에만 grep 교차 확인
+- [실측] Spring 특유의 연결이 아닌 평범한 메서드 호출도 그래프에서 빠질 수 있다. `jwtTokenUtil.generateToken(userDetails)` 호출 2곳(admin·portal 서비스 구현체)이 callers와 callees 어디에도 잡히지 않았다. 같은 필드를 통한 `refreshHeadToken`, `getUserNameFromToken` 호출은 모듈을 넘어서도 잡혔다. `generateToken`이 오버로드된 메서드라는 점이 의심되지만, 오버로드인 `deleteBrand`는 정상이어서 원인은 확정하지 못했다. 영향 범위 확정 시 grep 교차 확인이 필요한 직접 근거다.
 - [추정, 미검증] 목록은 정적 분석의 일반적인 한계에 근거한 것이다. codegraph가 각 항목을 실제로 놓치는지는 확인하지 않았다. 사내 코드로 확인해서 잘 잡히는 항목은 지운다.
 - [문서] codegraph의 자체 측정에서 Spring 라우트 인식률은 83.3%다.
 - [판단] 교차 확인을 영향 범위 확정 시로만 제한하는 것은 매 탐색마다 재검증하는 비용을 피하기 위해서다.
@@ -92,6 +95,13 @@ graph 인덱싱은 구조 파악과 호출 체인 추적에는 강하다. 반면
 ### R13–R15. 인덱스 신선도
 - [실측] 파일 수정 1.5초 뒤 조회에서 R13의 배너가 나왔고("edited 1563ms ago, indexing in progress"), 4초 뒤에는 사라졌다.
 - [소스] DISABLED/RECOVERING 배너의 의미와 `init`을 사용자에게 맡기라는 내용은 codegraph 서버 지침에 있다.
+
+### R16. 호출 흐름은 callees로 한 단계씩
+- [실측] `UmsAdminController.login`에서 `JwtTokenUtil.generateToken`까지를 두 방식으로 비교했다. 실제 경로는 컨트롤러 → `UmsAdminService.login`(인터페이스) → `UmsAdminServiceImpl.login` → `jwtTokenUtil.generateToken()`이다.
+  - callees 한 단계씩: 3번 호출(759자, 147자, 486자, 합계 약 350 토큰)로 구현체까지 도달했다. 구현체의 callees 목록에 `generateToken`이 없어서 끊긴 지점이 바로 드러났다.
+  - explore(X와 Y 이름 지정): 24,972자(약 6,200 토큰). 흐름(Flow) 절이 아예 없었고, 경로를 찾지 못했다는 표시도 없이 관련 소스로 채워졌다.
+- [실측] 인터페이스 메서드(`UmsAdminService.login`)에 callees를 걸면 구현체(`UmsAdminServiceImpl.login`)를 반환했다. Spring 서비스 계층을 넘는 데 문제가 없다.
+- [판단] callees는 실패가 드러나는 방식으로 실패하고(목록에 다음 메서드가 없음), 그 지점의 메서드 본문 Read로 복구할 수 있다. explore는 큰 비용을 쓰고도 실패가 드러나지 않는다. 그래서 X의 이름을 알면 callees를 기본으로 한다.
 
 ## 측정 환경
 
@@ -105,3 +115,4 @@ graph 인덱싱은 구조 파악과 호출 체인 추적에는 강하다. 반면
 
 - 2026-10-31: 초안. 3개 도구 고정과 라우팅 규칙 방식을 채택했다.
 - 2026-11-01: R7 근거를 고쳤다. dedup 옵션을 켜면 해결되는 것처럼 읽히던 문장을, 실측 결과와 함께 "검토했지만 채택하지 않음"으로 바꿨다.
+- 2026-11-02: `callees`를 추가해 도구를 4개로 늘리고 호출 흐름 규칙 R16을 신설했다. R12에 그래프가 평범한 호출을 놓친 실측 사례를 추가했다.
