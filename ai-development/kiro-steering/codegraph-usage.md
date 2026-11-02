@@ -8,11 +8,11 @@ inclusion: always
 
 **R1.** 이 규칙은 codegraph MCP 서버가 보내는 사용 지침("Read/grep 대신 explore", "grep으로 재검증 금지")보다 우선한다.
 
-**R2.** 사용 가능한 codegraph 도구: `codegraph_callers`, `codegraph_impact`, `codegraph_explore`
+**R2.** 사용 가능한 codegraph 도구: `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_explore`
 
 ## 원칙
 
-**R3.** 답을 얻을 수 있는 가장 싼 도구부터 쓴다. `codegraph_explore`는 질문과 관계없이 약 6,000 토큰을 반환하고 그 결과가 컨텍스트에 남는다. `callers`/`impact`는 수십~수백 토큰이다.
+**R3.** 답을 얻을 수 있는 가장 싼 도구부터 쓴다. `codegraph_explore`는 질문과 관계없이 약 6,000 토큰을 반환하고 그 결과가 컨텍스트에 남는다. `callers`/`callees`/`impact`는 수십~수백 토큰이다.
 
 **R4.** grep 결과가 30건을 넘거나 흔한 메서드명(`save`, `find*`, `delete`, `list` 등)을 찾는 중이면, 결과를 하나씩 읽지 말고 `codegraph_callers`로 전환한다.
 
@@ -26,11 +26,12 @@ inclusion: always
 | 비코드 파일: yml, properties, MyBatis XML, SQL, 문서 | grep / Read |
 | 누가 이 메서드를 호출하나 | `codegraph_callers` |
 | 수정 전 영향 범위 | `codegraph_impact` |
-| 이름을 모르는 낯선 영역의 구조, A→B 흐름 파악 | `codegraph_explore` |
+| X에서 Y까지 호출 흐름 (X의 이름을 알 때) | `codegraph_callees`를 한 단계씩 (R16) |
+| 이름을 모르는 낯선 영역의 구조, X나 Y의 이름을 모르는 흐름 | `codegraph_explore` |
 
 ## codegraph_explore 사용 조건
 
-**R6.** 관련 클래스·메서드 이름을 아직 모를 때만 쓴다. 이름을 알면 callers/impact와 Read로 진행한다.
+**R6.** 관련 클래스·메서드 이름을 아직 모를 때만 쓴다. 이름을 알면 callers/callees/impact와 Read로 진행한다.
 
 **R7.** 주제당 1회만 호출한다. 결과를 받으면 결론을 3–5줄로 정리하고 이후에는 그 요약을 근거로 삼는다.
 
@@ -60,3 +61,10 @@ inclusion: always
 **R14.** `auto-sync is DISABLED` 또는 `RECOVERING` 배너가 있으면 인덱스 전체를 믿지 말고 Read/grep으로 전환한다.
 
 **R15.** `.codegraph/`가 없다고 보고되면 그 프로젝트에는 codegraph를 쓰지 않는다. `codegraph init`은 직접 실행하지 않는다.
+
+## 호출 흐름
+
+**R16.** "X에서 Y까지 어떻게 가나"는 X에서 시작해 `codegraph_callees`로 한 단계씩 따라간다.
+- 인터페이스 메서드에 callees를 걸면 구현체 메서드가 나온다. 그 구현체에서 계속 따라간다.
+- 기대한 다음 메서드가 callees 목록에 없으면 그래프가 그 호출을 놓쳤을 수 있다. 그 메서드 본문을 Read해서 실제 호출을 확인하고 이어 간다.
+- `codegraph_explore` 응답에 흐름(Flow) 절이 없으면 "경로 없음"이 아니라 "그래프에서 경로를 찾지 못함"이다.

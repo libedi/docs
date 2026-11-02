@@ -21,10 +21,11 @@
 ## TL;DR
 
 - **`codegraph_explore`는 질문과 관계없이 매번 약 6,200 토큰을 반환합니다.** 같은 질문에 `callers`는 약 40 토큰, `impact`는 약 145 토큰이었습니다. graph 인덱싱 자체보다 "큰 응답 하나만 주는 도구 설계"가 컨텍스트 낭비의 원인입니다.
-- **도구는 `explore`, `callers`, `impact` 3개로 고정하고, 언제 무엇을 쓸지는 steering 규칙으로 제한합니다.** 도구 세트를 메인 저장소와 워크트리에 다르게 주는 방식은 `.worktrees/` 구조에서 MCP 프로세스가 1개만 떠서 불가능합니다.
+- **도구는 `explore`, `callers`, `callees`, `impact` 4개로 고정하고, 언제 무엇을 쓸지는 steering 규칙으로 제한합니다.** 도구 세트를 메인 저장소와 워크트리에 다르게 주는 방식은 `.worktrees/` 구조에서 MCP 프로세스가 1개만 떠서 불가능합니다.
 - **`explore`는 이름을 모르는 낯선 영역을 처음 파악할 때만, 주제당 1회 씁니다.** 이름을 알면 좁은 도구가 컨텍스트를 3.5배 덜 씁니다. 다만 이름을 모를 때는 왕복을 줄이는 `explore`가 유리해서 끄지는 않습니다.
+- **"X에서 Y까지" 흐름 질문은 `callees`로 한 단계씩 따라갑니다.** 같은 질문에 `callees`는 약 350 토큰으로 끊긴 지점까지 정확히 보여 줬고, `explore`는 약 6,200 토큰을 쓰고도 경로를 찾지 못했다는 사실이 드러나지 않았습니다.
 - **워크트리 작업에서는 `projectPath`를 반드시 넘겨야 합니다.** 생략하면 메인 저장소의 인덱스를 조회해 현재 브랜치와 다른 코드를 근거로 판단하게 됩니다.
-- **Spring 특유의 연결(AOP, 이벤트, MyBatis XML 등)을 그래프가 놓치는지는 아직 검증하지 않았습니다.** 사내 코드로 확인이 필요합니다.
+- **그래프는 평범한 메서드 호출도 놓칠 수 있습니다.** `jwtTokenUtil.generateToken()` 호출 2곳이 그래프에 없었습니다. 영향 범위를 확정할 때는 grep 교차 확인이 필요합니다. Spring 특유의 연결(AOP, 이벤트, MyBatis XML 등)은 아직 검증하지 않았습니다.
 
 ## 1. 배경
 
@@ -56,7 +57,16 @@ graph 인덱싱은 전체 구조 파악과 호출 체인 추적에는 강하지�
 | `explore` (심볼 이름을 넣은 질의) | 1번 | 약 6,200 tok |
 | `explore` (자연어 질의) | 1번 | 약 5,400 tok |
 
-### 2.3 고정 비용
+### 2.3 X에서 Y까지 (`UmsAdminController.login` → `JwtTokenUtil.generateToken`)
+
+실제 경로는 컨트롤러 → `UmsAdminService.login`(인터페이스) → `UmsAdminServiceImpl.login` → `jwtTokenUtil.generateToken()`입니다.
+
+| 방식 | 결과 | 크기 |
+| --- | --- | --- |
+| `callees`로 한 단계씩 | 3번 호출로 구현체까지 도달했습니다. 인터페이스에 건 callees가 구현체를 반환했습니다. 구현체의 callees 목록에 `generateToken`이 없어 끊긴 지점이 드러났습니다. | 약 350 tok |
+| `explore` (X와 Y 이름 지정) | 흐름(Flow) 절이 없었습니다. 경로를 찾지 못했다는 표시도 없이 관련 소스로 채워졌습니다. | 약 6,200 tok |
+
+### 2.4 고정 비용
 
 | 항목 | 크기 |
 | --- | --- |
@@ -64,7 +74,7 @@ graph 인덱싱은 전체 구조 파악과 호출 체인 추적에는 강하지�
 | 도구 정의: explore / callers / impact | 1,786자 / 1,125자 / 1,057자 |
 | 도구 정의: node / search / callees | 2,951자 / 1,170자 / 1,081자 |
 
-### 2.4 관찰된 동작
+### 2.5 관찰된 동작
 
 - **`explore`의 응답은 상한까지 채워집니다.** 질문 4개가 모두 약 24,900자였습니다.
 - **흔한 이름에서는 `explore`도 노이즈에 걸립니다.** "who calls UmsAdminService.delete"라고 질의하자 무관한 `SmsFlashPromotion*Controller.delete` 등을 단어 매칭으로 끌어왔습니다. 정답은 영향 범위 요약에만 있었습니다.
@@ -72,17 +82,20 @@ graph 인덱싱은 전체 구조 파악과 호출 체인 추적에는 강하지�
 - **인터페이스 메서드의 `callers`는 구현체 내부의 자기 호출을 빠뜨립니다.** `UmsAdminService.getAdminByUsername`의 callers는 1건이었지만, `UmsAdminServiceImpl` 126행과 267행에서도 호출합니다.
 - **워크트리 DB는 메인 저장소의 데몬이 `projectPath`로 엽니다.** 워크트리에서 새 호출자를 추가하자, `projectPath`를 준 조회에는 약 1.5초 뒤 반영됐습니다(호출자 2건). `projectPath` 없이 조회하면 메인 DB 결과가 그대로 나왔습니다(1건).
 - **수정 직후에는 신선도 경고가 붙습니다.** 1.5초 뒤 조회에 "edited 1563ms ago, indexing in progress" 배너가 나왔고, 4초 뒤에는 사라졌습니다.
+- **그래프가 평범한 메서드 호출을 놓쳤습니다.** `jwtTokenUtil.generateToken(userDetails)` 호출 2곳(admin·portal 서비스 구현체)이 callers와 callees 어디에도 없었습니다. 같은 필드를 통한 `refreshHeadToken`, `getUserNameFromToken` 호출은 모듈을 넘어서도 잡혔습니다. `generateToken`이 오버로드된 메서드라는 점이 의심되지만, 오버로드인 `deleteBrand`는 정상이어서 원인은 확정하지 못했습니다.
 - **`.worktrees/`가 gitignore에 제대로 등록되지 않으면 메인 DB가 오염됩니다.** 메인 데몬의 watcher가 워크트리에서 수정된 파일을 메인 DB에도 넣어 결과가 중복됐습니다.
 
 ## 3. 설계 결정
 
-### 3.1 도구 3개 고정 (`CODEGRAPH_MCP_TOOLS=explore,callers,impact`)
+### 3.1 도구 4개 고정 (`CODEGRAPH_MCP_TOOLS=explore,callers,callees,impact`)
 
-`callers`와 `impact`는 grep이 가장 약한 지점(흔한 이름, 인터페이스↔구현체, 오버로드)을 메웁니다. 두 도구를 켜는 고정 비용은 약 550 토큰이라 `explore` 호출 한 번만 피해도 회수됩니다.
+`callers`와 `impact`는 grep이 가장 약한 지점(흔한 이름, 인터페이스↔구현체, 오버로드)을 메웁니다. `callees`는 "X에서 Y까지" 흐름 질문을 맡습니다(2.3절). 세 도구를 켜는 고정 비용은 약 820 토큰이라 `explore` 호출 한 번만 피해도 회수됩니다.
+
+초안(2026-10-31)에서는 `callees`가 근거 없이 빠져 있었습니다. 흐름 질문을 codegraph로 처리하는 프로젝트 steering을 검토하다가 확인했고, 실측 후 추가했습니다.
 
 `search`는 Java 클래스명이 대체로 고유해서 grep으로 충분하다고 보고 제외했습니다. `node`는 파일 모드 결과가 Read와 크기가 같고(12,037자 대 원본 11,227자) 도구 정의가 가장 커서 제외했습니다.
 
-codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른다는 측정을 근거로 `explore` 하나만 노출합니다. 다만 그 측정은 아키텍처 질문 하나짜리 벤치마크라 호출자나 영향도 같은 중간 질문은 다루지 않았습니다. 그래서 메뉴를 3개로 최소화하는 선에서 절충했습니다.
+codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른다는 측정을 근거로 `explore` 하나만 노출합니다. 다만 그 측정은 아키텍처 질문 하나짜리 벤치마크라 호출자나 영향도 같은 중간 질문은 다루지 않았습니다. 그래서 질문 유형마다 도구가 하나씩 대응하도록 메뉴를 4개로 최소화했습니다.
 
 ### 3.2 검토했다 버린 대안
 
@@ -93,11 +106,11 @@ codegraph 작성자는 메뉴가 길면 에이전트가 도구를 잘못 고른�
 | spec 단계와 구현 단계에 다른 에이전트를 둔다 | Kiro의 spec 전용 에이전트는 빌트인이라 수정할 수 없습니다. |
 | `explore` 중복 제거(`CODEGRAPH_EXPLORE_DEDUP=1`)를 켠다 | 이미 보낸 소스를 생략한 자리를 다른 소스로 다시 채워서 응답이 거의 줄지 않습니다. 같은 질의를 반복해도 24,979자에서 22,052자로 12% 줄었습니다. dedup 상태는 MCP 연결 단위라서, Kiro가 대화를 요약한 뒤에는 모델이 갖고 있지 않은 소스를 생략할 위험이 있습니다. |
 
-결국 도구 수를 동적으로 바꾸지 않고 규칙으로 제한합니다. 규칙에는 강제력이 없으므로, 필요하면 Kiro `mcp.json`의 `autoApprove`에 `callers`와 `impact`만 넣어 `explore` 호출 때 승인 창이 뜨게 하는 방법을 보조로 검토합니다.
+결국 도구 수를 동적으로 바꾸지 않고 규칙으로 제한합니다. 규칙에는 강제력이 없으므로, 필요하면 Kiro `mcp.json`의 `autoApprove`에 `callers`, `callees`, `impact`만 넣어 `explore` 호출 때 승인 창이 뜨게 하는 방법을 보조로 검토합니다.
 
 ### 3.3 규칙 문서와 근거 문서 분리
 
-steering을 `inclusion: always`로 두면 매 턴 컨텍스트를 차지합니다. 그래서 규칙(`codegraph-usage.md`, always)과 근거(`codegraph-usage-rationale.md`, manual)를 나누고, 같은 규칙 ID(R1–R15)로 연결합니다. 두 파일은 4장에 있습니다.
+steering을 `inclusion: always`로 두면 매 턴 컨텍스트를 차지합니다. 그래서 규칙(`codegraph-usage.md`, always)과 근거(`codegraph-usage-rationale.md`, manual)를 나누고, 같은 규칙 ID(R1–R16)로 연결합니다. 두 파일은 4장에 있습니다.
 
 ## 4. 규칙과 근거 파일
 
@@ -105,19 +118,20 @@ Kiro에 그대로 넣는 원본은 [`kiro-steering/`](kiro-steering/) 폴더의 
 
 | 파일 | 넣을 위치 | inclusion | 내용 |
 | --- | --- | --- | --- |
-| [codegraph-usage.md](kiro-steering/codegraph-usage.md) | `.kiro/steering/` | always | 규칙 R1–R15 |
+| [codegraph-usage.md](kiro-steering/codegraph-usage.md) | `.kiro/steering/` | always | 규칙 R1–R16 |
 | [codegraph-usage-rationale.md](kiro-steering/codegraph-usage-rationale.md) | `.kiro/steering/` | manual | 규칙별 근거와 태그([실측]/[소스]/[문서]/[추정]/[판단]), 측정 환경, 변경 이력 |
 
 규칙 구성은 다음과 같습니다.
 
 | 규칙 | 내용 |
 | --- | --- |
-| R1–R2 | 서버 지침보다 우선, 도구 3개 |
+| R1–R2 | 서버 지침보다 우선, 도구 4개 |
 | R3–R5 | 가장 싼 도구부터, grep 30건 기준, 상황별 도구 표 |
 | R6–R9 | explore 사용 조건: 이름을 모를 때만, 주제당 1회, 질의에 이름 포함, spec 구현 중 금지 |
 | R10 | 워크트리는 `projectPath` 필수 |
 | R11–R12 | Spring 검증: 인터페이스·구현체 함께 조회, 영향 범위 확정 시 grep 교차 확인 |
 | R13–R15 | 인덱스 신선도 배너 대응, `init` 직접 실행 금지 |
+| R16 | 호출 흐름: X에서 `callees`로 한 단계씩, 끊기면 그 메서드 본문 Read |
 
 MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 
@@ -128,7 +142,7 @@ MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
       "command": "codegraph",
       "args": ["serve", "--mcp"],
       "env": {
-        "CODEGRAPH_MCP_TOOLS": "explore,callers,impact",
+        "CODEGRAPH_MCP_TOOLS": "explore,callers,callees,impact",
         "CODEGRAPH_TELEMETRY": "0"
       }
     }
@@ -142,10 +156,11 @@ MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 | --- | --- |
 | Kiro가 codegraph 서버 지침을 모델에 반영하는지 (R1) | 규칙 없이 단순 조회를 시켜 보고 `explore`를 먼저 부르는지 관찰 |
 | 에이전트가 규칙대로 도구를 고르는지 (R3–R9) | 사내 대표 Spring 모듈로 질문 유형별 3–4개씩 실행해 호출 로그 확인 |
-| Spring 특유의 연결을 그래프가 놓치는지 (R12) | AOP, 이벤트 리스너, MyBatis XML이 있는 메서드에 `callers`·`impact`를 걸어 grep 결과와 비교. 잘 잡히는 항목은 목록에서 삭제 |
+| Spring 특유의 연결을 그래프가 놓치는지 (R12). 평범한 호출 누락은 실측으로 확인됨 | AOP, 이벤트 리스너, MyBatis XML이 있는 메서드에 `callers`·`impact`를 걸어 grep 결과와 비교. 잘 잡히는 항목은 목록에서 삭제 |
 | grep 30건 기준의 적정성 (R4) | 사내 코드에서 흔한 메서드명의 grep 결과 수 분포 확인 |
 | `autoApprove` 지원 여부 (3.2절) | 사내 Kiro 버전의 `mcp.json` 스키마 확인 |
 | `explore` 응답 상한과 인덱스 규모의 관계 | 사내 대형 저장소에서 응답 크기 측정 |
+| `generateToken` 호출 누락의 원인 (R12, R16) | 사내 코드에서 오버로드된 메서드의 callers를 grep과 비교 |
 
 ## 6. 측정 환경
 
@@ -160,3 +175,4 @@ MCP 설정(`.kiro/settings/mcp.json`)에는 다음 환경변수를 둡니다.
 - 2026-10-31: 초안. 3개 도구 고정과 라우팅 규칙 방식을 채택했습니다.
 - 2026-10-31: steering 원본 파일 2개를 `kiro-steering/`에 추가하고, 노트에 복사해 두었던 규칙 원문과 근거 표를 파일 링크로 대체했습니다.
 - 2026-11-01: `CODEGRAPH_EXPLORE_DEDUP`을 검토했다 버린 대안에 실측값과 함께 추가했습니다.
+- 2026-11-02: `callees`를 추가해 도구를 4개로 늘리고, 호출 흐름 규칙 R16과 X→Y 실측(2.3절), 그래프의 호출 누락 사례를 추가했습니다.
