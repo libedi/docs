@@ -4,16 +4,19 @@
 #
 #   logic-candidates.sh <task-id> [main-source-glob]
 #
+# 범위는 이번 회차의 리뷰 범위(review-status.sh의 review_from→review_to)다.
 # 기본 대상은 src/main 아래 Java 파일. 멀티모듈이면 '*/src/main/**/*.java' 처럼 넘긴다.
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=review-lib.sh
+. "$here/review-lib.sh"
 
 task=${1:?task-id 필요}
 glob=${2:-'*src/main/**/*.java'}
 
 cd "$(git rev-parse --show-toplevel)"
 
-from="refs/worktree/review/$task/start"
-to="refs/worktree/review/$task/done"
+read -r from to < <(review_range "$task") || { echo "done 스냅샷이 없습니다: $task" >&2; exit 2; }
 
 # 추가된 줄 중 분기·검증·반복·계산의 흔적
 # (awk마다 \b 지원이 달라서 단어 경계를 문자 클래스로 직접 표현한다)

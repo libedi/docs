@@ -8,7 +8,7 @@ AI 에이전트 시대의 개발방법론(SDD, 하네스 엔지니어링, TDD·�
 
 - [AI Agent 시대의 소프트웨어 개발방법론: 2026년 9월 현황과 전망](ai-development/2026-09-ai-agent-era-dev-methodology.md) (2026-09-28)
 - [codegraph MCP 코드 탐색 라우팅 규칙과 설계 근거](ai-development/2026-10-codegraph-routing-rules.md) (2026-10-31)
-- [Kiro spec workflow에 에이전트 코드 리뷰 단계를 추가하는 제안](ai-development/2026-11-agent-code-review-stage.md) (2026-11-02)
+- [Kiro spec workflow에 에이전트 코드 리뷰 단계를 추가하는 제안](ai-development/2026-11-agent-code-review-stage.md) (2026-11-02, v2 2026-11-04)
 - [서브에이전트는 언제 나누는가: 조직도가 아니라 정보 흐름으로](ai-development/2026-11-subagent-boundaries.md) (2026-11-02)
 
 ## Spring Batch
