@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // review-cleanup.sh로 지우기 전에 지적과 판정을 한 줄씩 남기고, 항목별 집계를 출력한다.
 //
-//   node review-export.mjs <out.jsonl> [--include-eval]
+//   node review-export.mjs [out.jsonl] [--include-eval]
+//
+// out을 생략하면 메인 저장소 git 디렉터리의 review-metrics.jsonl(git rev-parse --git-common-dir)에 쌓는다.
+// 워크트리를 지워도 남는 위치다.
 //
 // 줄 형식: {exported_at, branch, target, round, reviewer, index, check, severity, origin, resolution}
 //   reviewer는 태그 없는 기본 리뷰어면 "primary", 비교 리뷰어면 그 태그
@@ -13,12 +16,12 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const out = process.argv[2];
 const includeEval = process.argv.includes('--include-eval');
-if (!out || out.startsWith('--')) { console.error('usage: node review-export.mjs <out.jsonl> [--include-eval]'); process.exit(2); }
+const outArg = process.argv.slice(2).find((a) => !a.startsWith('--'));
 
 const top = execFileSync('git', ['rev-parse', '--show-toplevel']).toString().trim();
 const git = (...a) => execFileSync('git', a, { cwd: top }).toString().trim();
+const out = outArg ?? resolve(top, git('rev-parse', '--git-common-dir'), 'review-metrics.jsonl');
 const reviewDir = resolve(top, git('rev-parse', '--git-path', 'review'));
 const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
 const now = new Date().toISOString();

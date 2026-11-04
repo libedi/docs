@@ -31,7 +31,7 @@ description: 리뷰 에이전트(task-reviewer, feature-reviewer)를 정답이 �
    출력의 `reviewer`, `target`, `type`, `spec`을 그대로 쓴다.
 2. 출력에 적힌 리뷰어를 부른다. 다른 리뷰어 구성을 시험할 때는 그 구성의 에이전트를 부르고 `tag`를 함께 넘긴다(예: `glm`, `prompt-v3`).
    - task-reviewer: `task=<target>`, `type=<type>`, `spec=<spec>`, (선택) `tag`
-   - feature-reviewer: `spec=<spec>`, `module_spec=<사례 안 경로>`, (선택) `tag`
+   - feature-reviewer: `target=<target>`, `spec=<spec>`, `module_spec=<module_spec>`, (선택) `tag`
    - 사례 이름, expected.json, 이 스킬의 내용을 리뷰어에게 넘기지 않는다.
 3. 모든 사례가 끝나면 채점한다.
    ```bash
@@ -53,11 +53,12 @@ cases/tr2-expect-changed/
   spec/             requirements.md, design.md, tasks.md (그 feature의 스펙)
   01-red.patch      base → 테스트만 작성된 상태
   02-done.patch     base → 구현 완료 상태 (여기에 버그를 심는다)
-  expected.json     {"findings":[{"check":"TR-2","file":"settlement/src/test/java/.../DiscountPolicyTest.java","line":42}]}
+  expected.json     {"findings":[{"check":"TR-2","file":"settlement/src/test/java/com/example/settlement/DiscountPolicyTest.java","line":42}]}
 ```
 
-- 패치는 모두 base 기준이다(앞 패치에 이어 붙이지 않는다). `git diff <base> <상태>`로 만든다.
-- feature 사례는 `kind=feature`로 두고 `NN-gates.patch`(마지막 개발 태스크까지)와 `NN-done.patch`(게이트 이후)를 쓴다.
+- 패치는 모두 start 상태 기준이다(앞 패치에 이어 붙이지 않는다). start 상태는 보통 base 커밋이므로 `git diff <base> <그 단계의 상태>`로 만든다.
+- 리뷰 대상이 아닌 준비 변경이 필요하면 맨 앞에 `00-base.patch`(base 기준)를 둔다. 그러면 start 상태가 base + 준비 변경이 되고, 나머지 패치는 그 상태 기준으로 만든다.
+- feature 사례는 `kind=feature`로 두고 `NN-gates.patch`(마지막 개발 태스크까지)와 `NN-done.patch`(게이트 이후)를 쓴다. 둘 다 start 상태 기준이므로 done 패치는 gates의 변경을 포함한다. MODULE_SPEC은 사례 안에 두고 `module_spec=spec/MODULE_SPEC.md`처럼 적는다.
 - 버그 없는 사례도 전체의 1/3쯤 둔다. 같은 feature에서 버그를 심지 않은 버전을 쓰면 된다. 이 사례의 오탐이 "따르면 해로운 지적"의 후보다.
 - 심을 버그의 예
   - TR-1: 단언을 `isNotNull()`로 약화, 기대값을 구현과 같은 공식으로 계산

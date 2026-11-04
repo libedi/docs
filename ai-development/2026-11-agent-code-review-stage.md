@@ -38,7 +38,7 @@
 - **Spec 세션의 역할을 나눕니다.** 메인은 위임과 갈래 나누기만 하고, 고치는 일은 태스크 에이전트, tasks.md 변경은 스펙 에이전트, 판단은 읽기만 하는 리뷰어가 합니다. 리뷰어 호출은 구현한 쪽이 아니라 메인이 합니다.
 - **수정은 지적을 재현하는 테스트부터 시작합니다.** 재현되지 않으면 고치지 않고 사람에게 넘깁니다. 재리뷰는 수정분만 보고, 이전 지적을 반복하지 않으며, 2회까지입니다.
 - **처음에는 리포트만 받습니다.** 사람이 지적마다 다섯 가지 판정(고침·틀림·의도됨·사소함·해로움)을 남기고, 항목별 채택률이 확인된 것만 차단으로 올립니다. 리뷰어 자체는 정답이 있는 사례 묶음으로 회귀 테스트합니다.
-- **리뷰어 모델은 Opus 5.5를 기본으로 두고, GLM-5를 비교 리뷰어로 1단계에서 측정합니다.** GPT-5.6 Sol은 비용과 과잉 지적 때문에 제외합니다.
+- **리뷰어 모델은 Opus 5.5를 기본으로 두고, GLM-5를 비교 리뷰어로 1단계에서 측정합니다.** GPT-5.6 Sol은 과잉 지적 경험 때문에 제외합니다.
 
 ## v2에서 바뀐 것
 
@@ -56,7 +56,9 @@ v1을 [Claude Code 팀의 코드 리뷰 글](https://claude.dev/blog/solving-cod
 | 판정 기록 | 채택/기각 | fixed·wrong·intentional·minor·harmful (8.2절) | 기각 이유마다 고칠 곳이 다름. 글의 응답 분류 |
 | 최종 확인 | "사람 확인 후 커밋" | ELI5 HTML에 지적·판정·승인 스냅샷을 연결하고, 커밋 전 승인 스냅샷과 비교 (7장) | 승인 후 변경 방지. 글: 승인은 특정 커밋에 묶임 |
 | 리뷰어 평가 | 채택률만 | 정답 사례로 회귀 테스트하는 스킬 추가 (9장) | 채택률은 오탐만 보여주고 놓친 버그는 보여주지 않음 |
-| 리뷰어 모델 | "가능하면 다른 모델" | Opus 5.5 기본, GLM-5 비교 측정, GPT-5.6 Sol 제외 (6.3절) | 비용 배율과 과잉 지적 경험 |
+| 리뷰어 모델 | "가능하면 다른 모델" | Opus 5.5 기본, GLM-5 비교 측정, GPT-5.6 Sol 제외 (6.3절) | 과잉 지적 경험 (비용도 더 높음) |
+| 늦은 수정 | 없음 | 수정 시작 기준점(`fixbase-<n>`)으로 그 수정만 재리뷰하고, 게이트와 feature 재리뷰를 다시 거침 (6.8절) | 1단계는 지적을 모았다가 최종 확인 때 고침 |
+| 도입 순서 | 없음 | 파이프라인 확인 → 판정 측정 → 비교·평가·승인 장치 순으로 붙임 (8.4절) | 첫 도입에 장치가 많으면 실패 원인을 가르기 어려움 |
 | 위험도 | 없음 | 브레인스토밍에서 등급을 정하고 리뷰가 읽는 약속 (10장, 제안) | 글: 위험 등급은 작성자가 아니라 변경이 정함 |
 
 ## 1. 현재 구조와 빈칸
@@ -378,9 +380,10 @@ v2의 가장 큰 변경입니다. 같은 이름의 스냅샷을 다시 찍으면
 | `<target>/start` | 태스크 시작 기준(직전 태스크의 마지막 done, 없으면 HEAD). feature는 HEAD | 1회차 리뷰 범위의 시작, `origin` 판단 기준 |
 | `feature/gates` | 마지막 개발 태스크가 끝난 시점 | FR-3(게이트 단계 테스트)의 기준 |
 | `<target>/red-<n>` | red 확인 시점. 태스크 안의 red와 수정 루프의 red 모두 | TR-2 기준. 수정 루프의 red가 `not-red`면 재현 실패 |
-| `<target>/done-<n>` | 검증 통과 시점. **n이 곧 리뷰 회차** | 1회차: start→done-1, n회차: done-(n-1)→done-n |
+| `<target>/done-<n>` | 검증 통과 시점. **n이 곧 리뷰 회차** | 1회차: start→done-1, n회차: fixbase-n(없으면 done-(n-1))→done-n |
+| `<task>/fixbase-<n>` | 태스크 지적을 고치기 시작한 시점의 `_last` (`review-begin.sh <task> --fix`) | n회차 범위의 시작. 다른 태스크가 지나간 뒤 늦게 고쳐도 이 수정만 범위에 들어감 (6.8절) |
 | `<target>/fail-<n>` | done 검증이 실패한 시점 | 증거로만 남김. 회차에 넣지 않음 |
-| `feature/gate-<n>` | JaCoCo 태스크 실행 시점 | 증거로만 남김 |
+| `feature/gate-<n>` | JaCoCo 기준 검사 실행 시점 | 회차에 넣지 않음. 가장 최근 gate가 실패했으면 리뷰하지 않음 (5.6절) |
 | `_last` | 가장 최근에 통과한 done | 다음 태스크의 start |
 | `approved` | 사람이 최종 확인에서 승인한 스냅샷 | 커밋 전 비교(7장) |
 
@@ -388,7 +391,7 @@ v2의 가장 큰 변경입니다. 같은 이름의 스냅샷을 다시 찍으면
 
 - **태스크 안에서 red를 여러 번 확인해도 모두 남습니다.** 앞의 red가 지워져 TR-2 기준이 사라지는 일이 없습니다.
 - **수정 루프의 red가 따로 남습니다.** 재현 테스트가 실제로 실패했는지가 기록되고, 실패하지 않았으면(exit 3) 지적한 버그가 재현되지 않은 것입니다.
-- **재리뷰가 수정분만 봅니다.** done-(n-1)과 done-n이 둘 다 남아 있으므로 그 사이의 차이만 리뷰할 수 있습니다.
+- **재리뷰가 수정분만 봅니다.** done-(n-1)과 done-n이 둘 다 남아 있으므로 그 사이의 차이만 리뷰할 수 있습니다. 다른 태스크가 지나간 뒤에 고치는 경우에는 수정 시작 시점(fixbase-n)부터 봅니다.
 - **실패한 검증도 증거로 남습니다.** 검증에 실패한 done은 fail-n이 되어 회차를 늘리지 않고, 그 뒤에 리뷰를 요청하면 리뷰어가 막습니다(5.6절).
 
 리뷰어와 메인은 ref 이름을 직접 조립하지 않습니다. [`review-status.sh`](agent-code-review/scripts/review-status.sh)가 회차, 이번 리뷰 범위, 범위 안의 red, 직전 회차 findings, 리뷰 가능 여부를 한 번에 알려줍니다.
@@ -430,8 +433,10 @@ ready=yes
 | --- | --- | --- | --- |
 | 비즈니스 로직 (TDD) | 모듈 `test` | start / red-n (하나 이상) / done-n | TR-1, TR-2, TR-3 |
 | 인터페이스·VO | `compileJava` | start / done-n | TR-3, TR-4 |
-| JaCoCo report | JaCoCo 태스크 | feature/gate-n | – |
+| JaCoCo report | 커버리지 기준 검사 (`jacocoTestCoverageVerification` 등) | feature/gate-n | – |
 | smoke test | `build` (+ SpotBugs) | feature/start(HEAD) / gates / done-n | FR-1 ~ FR-4 |
+
+JaCoCo gate에는 커버리지 기준을 검사하는 태스크가 들어가야 합니다. `jacocoTestReport`는 리포트만 만들고 기준에 못 미쳐도 실패하지 않습니다. 사내에서 기준을 검사하는 태스크 이름은 확인이 필요합니다(13장).
 
 `verify-and-snapshot.sh`는 red 단계에서 테스트가 **실패해야** 0을 반환하고, 이미 통과하면 3을 반환합니다. 태스크 안에서는 Red를 거치지 않은 TDD를 막고, 수정 루프에서는 재현되지 않는 지적을 걸러냅니다. red 확인이 느리면 `--tests`로 새 테스트 클래스만 돌려도 됩니다. 완료 조건은 지금처럼 모듈 전체 `test`입니다.
 
@@ -439,29 +444,30 @@ ready=yes
 
 `verify-and-snapshot.sh`는 각 스냅샷의 Gradle 종료 코드, red 판정, 스냅샷 id, 순번을 `<label>.result`로 남기고, 테스트 태스크 하나를 실행했다면 `build/test-results/test`의 XML도 복사해 둡니다. 리뷰어는 테스트가 실제로 돌았고 통과했는지를 에이전트의 보고가 아니라 이 파일로 확인합니다.
 
-`review-status.sh`는 통과한 done이 없거나, 최신 done 뒤에 실패한 검증(fail-n, 실패한 gate-n)이 있으면 `ready=no`를 냅니다. 그러면 리뷰어는 리뷰하지 않고 blocker(`TR-0`/`FR-0`) 하나만 `record-findings.sh <target> --blocked`로 기록합니다(fail-closed). 이 기록은 회차와 무관한 `blocked-<k>.json`으로 남고, 메인은 태스크를 다시 위임합니다.
+`review-status.sh`는 통과한 done이 없거나, 최신 done 뒤에 실패한 검증(fail-n, 실패한 gate-n)이 있거나, 가장 최근 gate가 실패했으면 `ready=no`를 냅니다. 그러면 리뷰어는 리뷰하지 않고 blocker(`TR-0`/`FR-0`) 하나만 `record-findings.sh <target> --blocked`로 기록합니다(fail-closed). 이 기록은 회차와 무관한 `blocked-<k>.json`으로 남고, 메인은 태스크를 다시 위임합니다.
 
 **근거**
 
 - 에이전트가 스냅샷 호출을 빼먹을 수는 있습니다. 하지만 그 실패는 "ref가 없다"는 사실로 바로 드러납니다. 내용을 빠뜨리는 실패보다 훨씬 다루기 쉬운 실패입니다.
-- 검증 결과를 훅이 아니라 스크립트에 두는 이유도 같습니다. Kiro 문서에 따르면 서브에이전트 안에서는 훅이 실행되지 않으므로(13장), 위임된 태스크 에이전트의 행동에 훅을 걸 수 없습니다.
+- **gate는 "최신 done 뒤"만 봐서는 부족합니다.** JaCoCo gate가 실패한 채 gate를 다시 돌리지 않고 smoke test로 넘어가면, 실패가 최신 done보다 앞에 있어서 그 규칙으로는 잡히지 않습니다. 그래서 가장 최근 gate의 결과를 따로 봅니다.
+- 검증 결과를 훅이 아니라 스크립트에 두는 이유도 같습니다. Kiro 문서에 따르면 서브에이전트 안에서는 훅이 실행되지 않으므로([Kiro subagents](https://kiro.dev/docs/chat/subagents/)), 위임된 태스크 에이전트의 행동에 훅을 걸 수 없습니다.
 
 ### 5.7 스크립트 목록
 
-프로젝트의 `scripts/review/`에 두는 것을 전제로 합니다. 의존성은 git과 bash이고, `.mjs` 두 개만 Node.js 18+가 필요합니다(jq는 있으면 findings 형식 검사에 씀).
+프로젝트의 `scripts/review/`에 두는 것을 전제로 합니다. 의존성은 git과 bash 4 이상이고, `.mjs` 두 개만 Node.js 18+가 필요합니다(jq는 있으면 findings 형식과 판정 index 검사에 씀). GNU 전용 옵션은 쓰지 않습니다.
 
 | 스크립트 | 역할 | 호출하는 쪽 |
 | --- | --- | --- |
 | [`review-lib.sh`](agent-code-review/scripts/review-lib.sh) | 공통 함수 (번호 규칙, 스냅샷, 회차 계산) | 다른 스크립트가 source |
-| [`review-begin.sh`](agent-code-review/scripts/review-begin.sh) | 태스크·feature 시작 기준점 기록 | 태스크 에이전트 |
+| [`review-begin.sh`](agent-code-review/scripts/review-begin.sh) | 태스크·feature 시작 기준점, 수정 시작 기준점(`--fix`) 기록 | 태스크 에이전트 |
 | [`verify-and-snapshot.sh`](agent-code-review/scripts/verify-and-snapshot.sh) | Gradle 검증 + 번호 붙은 스냅샷 + 결과 기록 | 태스크 에이전트 |
 | [`review-snapshot.sh`](agent-code-review/scripts/review-snapshot.sh) | 검증 없이 스냅샷만 (수동용) | 사람 |
 | [`review-status.sh`](agent-code-review/scripts/review-status.sh) | 회차, 리뷰 범위, red 목록, 리뷰 가능 여부 | 리뷰어 |
 | [`logic-candidates.sh`](agent-code-review/scripts/logic-candidates.sh) | 비TDD 태스크의 로직 후보 추출 | task-reviewer |
 | [`record-findings.sh`](agent-code-review/scripts/record-findings.sh) | 회차별 findings 기록 (리뷰어의 유일한 쓰기 통로) | 리뷰어 |
 | [`record-resolution.sh`](agent-code-review/scripts/record-resolution.sh) | 사람의 판정 기록 | 태스크 에이전트 (최종 확인 후) |
-| [`review-approve.sh`](agent-code-review/scripts/review-approve.sh) | 승인 스냅샷 기록과 커밋 전 비교 | 태스크 에이전트 또는 pre-commit 훅 |
-| [`review-export.mjs`](agent-code-review/scripts/review-export.mjs) | 정리 전 지적·판정을 지표 파일로 내보내고 항목별 집계 | 태스크 에이전트 (커밋 후) |
+| [`review-approve.sh`](agent-code-review/scripts/review-approve.sh) | 승인 스냅샷 기록과 커밋 전 비교 (훅 안에서는 `--index`) | 태스크 에이전트 또는 pre-commit 훅 |
+| [`review-export.mjs`](agent-code-review/scripts/review-export.mjs) | 정리 전 지적·판정을 지표 파일(기본: 메인 저장소 git 디렉터리)로 내보내고 항목별 집계 | 태스크 에이전트 (커밋 후) |
 | [`review-cleanup.sh`](agent-code-review/scripts/review-cleanup.sh) | 리뷰 ref와 기록 정리 (`eval-`만 지우기 가능) | 태스크 에이전트 (커밋 후) |
 | [`eval-setup.sh`](agent-code-review/scripts/eval-setup.sh) | 리뷰어 평가 사례를 스냅샷으로 만듦 | reviewer-eval 스킬 |
 | [`eval-score.mjs`](agent-code-review/scripts/eval-score.mjs) | 정답과 findings를 비교해 채점, 기준 대비 판정 | reviewer-eval 스킬 |
@@ -500,15 +506,15 @@ ready=yes
 | --- | --- | --- |
 | Claude Opus 5.5 | 2.0x | 기본 리뷰어 (태스크, feature) |
 | GLM-5 | 0.5x | 1단계 동안 태스크 리뷰의 비교 리뷰어로 측정 |
-| GPT-5.6 Sol | 4.4x (272K 토큰 초과 시 8.8x) | 제외 |
+| GPT-5.6 Sol | 2.4x (공식 문서). 사내 확인값 4.4x | 제외 |
 
 **근거**
 
 - **다른 모델의 가치는 성능이 아니라 틀리는 지점이 다르다는 데 있습니다.** 같은 모델끼리의 투표는 노이즈는 줄여도 공유하는 맹점은 줄이지 못합니다. Claude Code 팀 글에 대한 비판도 이 지점을 짚었습니다([paddo.dev](https://paddo.dev/blog/claude-reviewing-claude)).
-- **GPT-5.6 Sol은 비용과 정밀도 둘 다 맞지 않습니다.** 스펙 리뷰에 써 본 경험으로는 과하게 지적하는 경우가 많았습니다. 작성자가 에이전트면 과잉 지적은 그대로 불필요한 수정이 됩니다(4.9절). 비용도 Opus 5.5의 2.2배, 긴 입력에서는 4.4배입니다.
+- **GPT-5.6 Sol은 정밀도가 맞지 않습니다.** 스펙 리뷰에 써 본 경험으로는 과하게 지적하는 경우가 많았습니다. 작성자가 에이전트면 과잉 지적은 그대로 불필요한 수정이 됩니다(4.9절). 비용도 Opus 5.5보다 높습니다. Kiro 공식 문서는 2.4x(Opus 5.5의 1.2배)이고([Kiro available models](https://kiro.dev/docs/models/available-models/)), 사내에서 확인한 값은 4.4x(272K 토큰 초과 시 8.8x)입니다. Enterprise(Pro) 라이선스 환경을 정리한 Classmethod 표도 4.4x로 적고 있어 라이선스에 따라 다를 수 있습니다. 사내 `kiro-cli chat --list-models`로 확정하되(13장), 제외 결론은 과잉 지적 경험만으로 유지됩니다.
 - **GLM-5는 비교 후보로 적당합니다.** Kiro에서 experimental로 지원되고 0.5x 배율이라 Opus 5.5의 1/4입니다. 두 리뷰어를 모두 돌려도 비용은 25% 늘어납니다. 출시 당시 SWE-bench Verified 77.8%로 Claude Opus 4.5(80.9%)보다 낮은 세대지만, 다른 회사 모델이라 구현을 맡은 Opus와 맹점이 겹칠 가능성이 낮습니다. 출시 당시 Artificial Analysis 기준 환각률이 가장 낮다는 평가도 있어 과잉 지적 성향은 덜할 것으로 봅니다. 다만 이는 지식 질문 기준이라 코드 리뷰 오탐률과 같지 않습니다.
 - **GLM-5는 태스크 리뷰에서만 비교합니다.** 후속 버전 GLM-5.2를 리뷰어로 평가한 글에서는, 프롬프트 문구가 추론 강도보다 결과를 더 크게 바꿨고, 작고 독립적인 변경에서는 강했지만 여러 곳을 이어 봐야 하는 문제에서는 편차가 컸습니다([Kilo](https://blog.kilo.ai/p/glm-52s-code-reviews-are-only-as)). 태스크 리뷰는 입력이 작고, 체크 항목이 구체적이고, TR-2·TR-3·TR-4가 diff 사실에 근거해서 이 약점이 덜 드러납니다. FR-2처럼 이어 보는 판단이 중심인 feature 리뷰는 Opus로 둡니다.
-- **결정은 측정으로 합니다.** 1단계 동안 같은 스냅샷에 두 리뷰어를 모두 돌립니다. 스냅샷이 git ref라서 같은 입력을 몇 번이든 다시 쓸 수 있습니다. Kiro 에이전트는 모델이 고정되므로 `task-reviewer.md`를 복사해 `name: task-reviewer-glm`과 `model`만 바꾸고, 메인이 `tag: glm`을 넘깁니다. 비교 결과는 `findings-<n>.glm.json`으로 따로 남고 수정 루프에는 쓰지 않습니다. 비교할 것은 항목별 채택률, 한쪽만 찾은 진짜 버그 수, 리뷰어 회귀 테스트 점수(9장)입니다.
+- **결정은 측정으로 합니다.** 1단계 안에서, 기본 구성이 Kiro에서 도는 것을 확인한 다음(8.4절) 같은 스냅샷에 두 리뷰어를 모두 돌립니다. 스냅샷이 git ref라서 같은 입력을 몇 번이든 다시 쓸 수 있습니다. Kiro 에이전트는 모델이 고정되므로 `task-reviewer.md`를 복사해 `name: task-reviewer-glm`과 `model`만 바꾸고, 메인이 `tag: glm`을 넘깁니다. 비교 결과는 `findings-<n>.glm.json`으로 따로 남고 수정 루프에는 쓰지 않습니다. 비교할 것은 항목별 채택률, 한쪽만 찾은 진짜 버그 수, 리뷰어 회귀 테스트 점수(9장)입니다.
 - 사내 보안 정책상 GLM-5를 쓸 수 있는지는 먼저 확인합니다(13장). Kiro에서 GLM-5 추론은 AWS us-east-1에서 돕니다([Kiro changelog](https://kiro.dev/changelog/models/glm-5-now-available-in-kiro/)).
 
 ### 6.4 읽기 전용 권한과 단일 쓰기 통로
@@ -583,17 +589,17 @@ permissions:
 
 ### 6.6 수정 루프
 
-1. 메인이 태스크 에이전트에 findings 파일 경로를 넘겨 수정을 위임합니다.
+1. 메인이 태스크 에이전트에 findings 파일 경로를 넘겨 수정을 위임합니다. 태스크 지적이면 태스크 에이전트가 먼저 `review-begin.sh <task> --fix`로 수정 시작 기준점(fixbase-n)을 남깁니다.
 2. 태스크 에이전트는 지적한 문제를 재현하는 테스트를 먼저 쓰고 `verify-and-snapshot.sh <target> red`를 실행합니다. TR-2라면 기대값을 되돌린 상태가 재현 테스트입니다.
    - **exit 3(재현 실패)이면 고치지 않고 멈춥니다.** 메인은 재현 테스트 경로와 함께 사람에게 넘깁니다.
 3. 고친 뒤 원래 완료 조건으로 `done`을 다시 실행합니다. 새 done-n이 생기고 회차가 하나 올라갑니다.
-4. 메인이 리뷰어를 다시 부릅니다. 리뷰어는 **done-(n-1)→done-n 차이만** 봅니다.
+4. 메인이 리뷰어를 다시 부릅니다. 리뷰어는 **수정분만** 봅니다. 태스크는 fixbase-n→done-n, feature는 done-(n-1)→done-n입니다.
    - 이전 회차의 blocker/major마다 해결 여부를 `carried`에 적습니다.
    - 이전 지적을 `findings`에 다시 쓰지 않습니다. 수정분이 새로 만든 문제만 씁니다.
 5. 재리뷰는 2회까지(3회차까지)입니다. 그 뒤에도 남은 blocker/major와 `carried`의 `unresolved`는 사람에게 넘기고 멈춥니다.
 6. 태스크 에이전트가 지적에 동의하지 않으면 고치지 않고 근거를 보고하고, 메인은 사람에게 넘깁니다.
 
-1단계(리포트만)에서는 이 루프를 자동으로 돌리지 않습니다. 지적을 모아 최종 확인에 올리고, 사람이 고치기로 한 것만 같은 루프로 처리합니다(8장).
+1단계(리포트만)에서는 이 루프를 자동으로 돌리지 않습니다. 지적을 모아 최종 확인에 올리고, 사람이 고치기로 한 것만 같은 루프로 처리합니다(6.8절).
 
 **근거**
 
@@ -614,6 +620,22 @@ permissions:
 
 재리뷰 2회 뒤에도 남은 지적이 있으면 문서 업데이트와 커밋 전에 멈추고, 최종 확인 HTML에 남은 지적을 올립니다. 사람은 사유를 적고 수용하거나, 직접 고치거나, 스펙이 틀렸다면 스펙을 고칩니다.
 
+### 6.8 1단계에서 늦게 고치는 경우
+
+1단계는 지적을 모았다가 최종 확인에서 사람이 고칠 것을 고릅니다. 이때 T1의 지적을 고치면, T1의 done-1 뒤로 T2와 feature 게이트 단계의 변경이 이미 지나가 있습니다. 재리뷰 범위를 done-1→done-2로 잡으면 그 변경이 모두 섞여 TR-3 오탐이 확정적으로 생깁니다.
+
+그래서 순서를 정해 둡니다.
+
+1. **태스크 지적마다**: `review-begin.sh <task> --fix`로 그 시점의 `_last`를 fixbase-n으로 남기고 수정합니다. 재리뷰 범위는 fixbase-n→done-n이라 이 수정만 들어갑니다.
+2. **태스크 지적이 모두 끝나면**: JaCoCo gate와 smoke test를 다시 실행하고 feature 재리뷰를 받습니다. feature 범위는 done-(n-1)→done-n이라 늦게 고친 태스크 수정이 모두 들어갑니다.
+3. **feature 지적**도 2번 안에서 함께 고칩니다. feature는 `--fix`를 쓰지 않습니다.
+4. 재리뷰 결과를 최종 확인에 다시 올립니다.
+
+**근거**
+
+- **바로 고치는 경우(2단계)와 결과가 같습니다.** 리뷰 직후 고치면 `_last`가 done-(n-1)이므로 fixbase-n = done-(n-1)입니다. 규칙 하나로 두 경우를 다룹니다.
+- **feature는 마지막 대상이라 그 뒤의 변경이 모두 재리뷰 대상입니다.** 늦게 고친 태스크 수정도 feature 관점(이음새, 게이트 단계 테스트)에서 다시 봐야 하므로, feature 범위는 좁히지 않습니다.
+
 ## 7. 사람의 최종 확인
 
 지금 워크플로우는 feature가 끝나면 목표, 코드 변경, 최종 확인 질문을 ELI5로 설명하는 HTML을 자동으로 띄웁니다. 이 방식은 유지하고 리뷰와 네 가지를 연결합니다.
@@ -621,13 +643,13 @@ permissions:
 1. **코드 변경 설명은 스냅샷 diff로 만듭니다.** `git diff refs/worktree/review/feature/start <최신 feature done>`이 원본입니다.
 2. **확인 질문에 리뷰 결과를 넣습니다.** 모든 회차의 지적 목록, FR-1 추적표의 빈칸, FR-4 승격 후보, `pre-existing` 백로그 후보입니다.
 3. **지적마다 판정을 받습니다.** fixed / wrong / intentional / minor / harmful 중 하나입니다(8.2절). 태스크 에이전트가 `record-resolution.sh`로 기록합니다.
-4. **승인 스냅샷을 묶습니다.** HTML에 승인 대상 스냅샷 id를 보여주고, 사람이 승인하면 `review-approve.sh mark <스냅샷>`으로 기록합니다. 문서 업데이트 후 커밋 직전에 `review-approve.sh check <문서 경로들>`로 승인 스냅샷과 비교합니다. 문서 경로는 문서 업데이트 태스크가 바꾸므로 비교에서 뺍니다.
+4. **승인 스냅샷을 묶습니다.** HTML에 승인 대상 스냅샷 id를 보여주고, 사람이 승인하면 `review-approve.sh mark <스냅샷>`으로 기록합니다. 문서 업데이트 후 커밋 직전에 `review-approve.sh check <문서 경로들>`로 승인 스냅샷과 비교합니다. 문서 경로는 문서 업데이트 태스크가 바꾸므로 비교에서 뺍니다. 늦은 수정(6.8절)이 있었다면 그 뒤의 최신 feature 스냅샷을 승인 대상으로 보여줍니다.
 
 pre-commit 훅에 다음을 넣으면 에이전트가 절차를 빼먹어도 막힙니다(선택).
 
 ```bash
 if git rev-parse -q --verify refs/worktree/review/approved > /dev/null; then
-  scripts/review/review-approve.sh check docs/ '*MODULE_SPEC*.md' .kiro/ || exit 1
+  scripts/review/review-approve.sh check --index docs/ '*MODULE_SPEC*.md' .kiro/ || exit 1
 fi
 ```
 
@@ -636,6 +658,7 @@ fi
 - **ELI5 HTML은 Claude Code 팀 글이 약하게 다룬 부분을 채웁니다.** 그 글은 리뷰의 두 번째 목적인 "코드베이스에 대한 공유된 이해"를 필요할 때 Claude에게 설명을 요청하는 방식으로 남겼습니다. 요청하지 않으면 이해가 조용히 낡습니다. feature마다 자동으로 띄우는 HTML은 그 문제를 푸는 장치입니다.
 - **요약을 구현 에이전트가 기억으로 쓰면 성공 오보고와 같은 구조가 됩니다.** 실제 코드가 아니라 의도를 설명할 위험이 있으므로, 변경 설명의 원본을 스냅샷 diff로 고정합니다.
 - **승인은 특정 상태에 묶여야 의미가 있습니다.** 승인 후에 에이전트가 코드를 더 고치면 사람은 본 적 없는 코드를 승인한 셈입니다. Claude Code 팀도 승인을 특정 커밋에 묶고, 시스템이 보증할 수 없는 새 커밋이 들어오면 다시 승인받습니다.
+- **훅 안에서는 실제로 커밋될 인덱스와 비교합니다(`--index`).** 작업 트리와 비교하면 부분 staging이 있을 때 승인되지 않은 내용이 커밋될 수 있습니다. Spotless 훅이 파일을 고쳐 다시 staging한다면 승인 비교는 그 뒤에 둡니다.
 - **판정을 최종 확인에서 받는 것이 가장 싸습니다.** 사람이 이미 지적 목록을 보고 있는 시점이라 따로 시간을 쓰지 않습니다.
 
 ## 8. 도입 단계와 측정
@@ -644,7 +667,7 @@ fi
 
 | 단계 | 기간 | 동작 |
 | --- | --- | --- |
-| 1. 리포트만 | 처음 3~5개 feature | 모든 지적을 기록만 하고 차단하지 않음. 사람이 최종 확인에서 지적마다 판정. GLM-5 비교 리뷰어 병행 |
+| 1. 리포트만 | 처음 3~5개 feature | 모든 지적을 기록만 하고 차단하지 않음. 사람이 최종 확인에서 지적마다 판정. 장치는 8.4절 순서로 붙임 |
 | 2. 선택적 차단 | 이후 | 채택률이 높은 `check`의 blocker/major만 수정 루프로 보내고 다음 태스크 진행을 막음 |
 | 3. 재조정 | 분기마다 | 채택률이 떨어진 항목은 리포트로 내리고, 결정론으로 옮길 수 있는 항목은 도구로 이전 |
 
@@ -682,13 +705,30 @@ fi
 - 리뷰 1회당 소요 시간과 크레딧
 - 1단계: 기본 리뷰어와 GLM-5의 항목별 채택률, 한쪽만 찾은 진짜 버그 수
 
-커밋 후 정리하기 전에 [`review-export.mjs`](agent-code-review/scripts/review-export.mjs)가 지적과 판정을 지표 파일에 한 줄씩 추가하고 항목별 집계를 출력합니다. 지표 파일은 워크트리를 지워도 남는 곳(예: 메인 저장소의 `.git/review-metrics.jsonl`)에 둡니다.
+커밋 후 정리하기 전에 [`review-export.mjs`](agent-code-review/scripts/review-export.mjs)가 지적과 판정을 지표 파일에 한 줄씩 추가하고 항목별 집계를 출력합니다. 인자를 생략하면 메인 저장소 git 디렉터리(`git rev-parse --git-common-dir`)의 `review-metrics.jsonl`에 쌓여서, 워크트리를 지워도 남습니다.
+
+### 8.4 장치를 붙이는 순서
+
+스크립트와 초안을 처음부터 모두 켜지 않습니다.
+
+| 순서 | 켜는 것 | 이때 확인할 것 |
+| --- | --- | --- |
+| 시범 1 (첫 feature 1~2개) | 스냅샷(`review-lib`, `review-begin`, `verify-and-snapshot`), `review-status`, `record-findings`, `logic-candidates`, `review-cleanup`, 리뷰어 2개, 절차 steering | 13장 상위 항목: 메인이 리뷰어를 부를 수 있는지, 리뷰 기록을 읽을 수 있는지, 권한 패턴이 의도대로 막는지 |
+| 시범 2 (1단계 본격) | `record-resolution`, `review-export`, 최종 확인 HTML의 판정 연동 | 판정이 지적마다 빠짐없이 남는지 |
+| 그다음 | GLM-5 비교 리뷰어, `review-approve`, reviewer-eval | 리뷰어 구성을 바꾸거나 2단계로 올리기 전 |
+
+**근거**
+
+- **처음 확인할 것은 리뷰 품질이 아니라 Kiro에서 이 흐름이 도는지입니다.** 13장의 미검증 항목 상당수가 여기에 걸려 있고, 장치가 많으면 실패 원인을 가르기 어렵습니다.
+- **판정 기록은 미루지 않습니다.** 1단계의 목적이 채택률 측정이라서, 판정 없이 돌린 feature는 측정에 쓸 수 없습니다. `review-cleanup.sh`가 기록을 지우므로 `review-export.mjs`도 함께 켭니다.
+- **비교 리뷰어와 회귀 테스트는 구성을 바꿀지 정할 때 쓰는 장치입니다.** 기본 구성이 돈 다음에 붙여도 늦지 않습니다. 대신 1단계 기간이 늘어날 수 있다는 점은 감수합니다.
+- **승인 스냅샷 비교도 급하지 않습니다.** 지금은 사람이 최종 확인을 직접 하고 커밋 직전 절차도 짧아서, 승인 뒤에 코드가 바뀔 여지가 작습니다.
 
 ## 9. 리뷰어 회귀 테스트
 
 채택률은 리뷰어가 틀린 지적을 얼마나 하는지만 보여줍니다. 진짜 버그를 얼마나 놓치는지는 나중에 사람이 우연히 발견해야 알 수 있어서 느리고 드뭅니다. 그래서 정답을 아는 시험지를 만듭니다. 초안은 [reviewer-eval 스킬](agent-code-review/kiro/skills/reviewer-eval/SKILL.md)입니다.
 
-- **시험지**: 완료된 feature에서 가져온 사례에 버그를 일부러 심습니다. 사례 하나는 base 커밋, base 기준 패치(red, done, feature는 gates), 스펙, 정답(`expected.json`: check, 파일, 줄)으로 구성됩니다. 버그가 없는 사례도 1/3쯤 섞어 오탐을 잽니다.
+- **시험지**: 완료된 feature에서 가져온 사례에 버그를 일부러 심습니다. 사례 하나는 base 커밋, start 상태 기준 패치(red, done, feature는 gates. 앞 패치에 이어 붙이지 않음), 스펙, 정답(`expected.json`: check, 파일, 줄)으로 구성됩니다. feature 사례는 feature-reviewer에 `target=eval-<사례>`를 넘겨 리뷰합니다. 버그가 없는 사례도 1/3쯤 섞어 오탐을 잽니다.
 - **준비**: [`eval-setup.sh`](agent-code-review/scripts/eval-setup.sh)가 패치를 임시 인덱스에만 적용해 `eval-<사례>` 스냅샷을 만듭니다. 작업 트리, 실제 인덱스, `_last`는 건드리지 않습니다. 리뷰어는 실제 feature와 똑같은 방식으로 리뷰합니다.
 - **채점**: [`eval-score.mjs`](agent-code-review/scripts/eval-score.mjs)가 findings와 정답을 비교합니다. check가 같고, 경로가 맞고, 줄이 허용 범위 안이면 맞힌 것입니다. LLM이 채점하지 않습니다. 출력 스키마를 고정해 둔 덕분입니다.
 - **언제**: 리뷰어 모델을 바꾸거나 비교할 때, 리뷰어 정의나 리뷰 steering을 고칠 때, Kiro 버전을 올릴 때, 사례를 추가했을 때.
@@ -747,7 +787,7 @@ fi
 | feature 리뷰를 JaCoCo 앞에 | 게이트 실패로 코드가 바뀌면 비싼 리뷰를 다시 해야 함. 리뷰 수정 후 게이트를 다시 돌리는 쪽이 쌈 (3.2절) |
 | JaCoCo 리포트를 리뷰어 입력으로 (v1 FR-3) | 모듈 전체라서 원래 있던 코드 지적이 섞임 (4.7절, 4.10절) |
 | 검증 에이전트 여러 개의 투표 | 같은 모델끼리의 투표는 공유된 맹점을 줄이지 못하고 비용이 큼. 재현 테스트로 대신함 (6.6절) |
-| GPT-5.6 Sol 리뷰어 | 과잉 지적 경험, 비용 4.4x~8.8x (6.3절) |
+| GPT-5.6 Sol 리뷰어 | 과잉 지적 경험. 비용도 Opus 5.5보다 높음 (6.3절) |
 | 구현 에이전트가 기억으로 최종 요약 작성 | 실제 코드가 아니라 의도를 설명할 위험. 성공 오보고와 같은 구조 (7장) |
 
 ## 13. 미검증 사항
@@ -757,7 +797,10 @@ fi
 | 사내 Kiro 버전이 IDE 1.0 / CLI 3.0의 Markdown 에이전트와 `permissions`, `model` 형식을 지원하는지 | 사내 버전 확인. CLI 2.x라면 `toolsSettings.shell.allowedCommands` 형식으로 바꿔야 함 |
 | Spec 세션의 메인이 커스텀 서브에이전트(task-reviewer 등)를 호출할 수 있는지 | 대표 feature 1개에서 호출 로그 확인. 안 되면 태스크 에이전트가 호출하되, 메인이 다음 태스크로 넘어가기 전에 `findings-<회차>.json` 존재를 확인하는 방식으로 대체 |
 | steering이 위임된 태스크·스펙 에이전트에도 포함되는지 | 문서상 공유되지만 Spec 세션 내장 에이전트에서 확인. 안 되면 태스크 위임 메시지에 steering 경로를 넣음 |
-| 서브에이전트에서 훅이 실행되지 않는지 (Kiro IDE Subagents 문서의 설명) | 태스크 에이전트에서 기존 훅 동작 확인. 이 제안은 훅에 기대지 않지만 기존 훅 운용에 영향이 있음 |
+| 서브에이전트에서 훅이 실행되지 않는지 ([Kiro subagents](https://kiro.dev/docs/chat/subagents/)의 설명) | 태스크 에이전트에서 기존 훅 동작 확인. 이 제안은 훅에 기대지 않지만 기존 훅 운용에 영향이 있음 |
+| 사내 VDI의 OS와 bash 버전 | 스크립트는 bash 4 이상이 필요함(`review-lib.sh`가 검사). Linux나 Git Bash는 문제없고 macOS 기본 bash 3.2에서는 동작하지 않음. `bash --version` |
+| 커버리지 기준을 검사하는 Gradle 태스크 | `jacocoTestCoverageVerification`이 설정돼 있는지, 사내 커스텀 태스크인지 확인하고 gate 명령에 넣음 |
+| GPT-5.6 Sol 크레딧 배율 | 공식 문서 2.4x, 사내 확인값 4.4x. `kiro-cli chat --list-models`로 확정 (제외 결론에는 영향 없음) |
 | 리뷰 기록 위치가 워크스페이스 밖으로 잡히는지 | 워크트리의 git 디렉터리는 메인 저장소의 `.git/worktrees/<이름>/` 아래라서, Kiro 워크스페이스를 워크트리 폴더로 열면 read 도구가 승인을 요청할 수 있음. 실제로 열어 보고, 막히면 메인 저장소 루트를 워크스페이스로 열거나 기록 읽기용 스크립트를 추가 |
 | 메인이 셸을 실행할 수 있는지 | 판정·승인 기록을 태스크 에이전트에 위임하도록 썼음. 메인이 셸을 쓸 수 있으면 직접 실행으로 단순화 |
 | `exclude` 패턴이 heredoc(`record-findings.sh T3 <<'EOF'`)과 명령 치환을 어떻게 매칭하는지 | 리뷰어로 실제 기록을 시켜 보고 허용·차단 여부 확인. 막히면 JSON을 인자로 받도록 스크립트 변경 |
@@ -784,6 +827,7 @@ fi
 - Arjun Panickssery, Samuel R. Bowman, Shi Feng, [LLM Evaluators Recognize and Favor Their Own Generations](https://arxiv.org/abs/2404.13076), NeurIPS 2024
 - Kiro, [Custom agents: configuration reference](https://kiro.dev/docs/custom-agents/configuration-reference/), [Invoking as sub-agents](https://kiro.dev/docs/custom-agents/subagents/), [Permissions](https://kiro.dev/docs/permissions/)
 - Kiro, [GLM-5 Now Available in Kiro](https://kiro.dev/changelog/models/glm-5-now-available-in-kiro/)
+- Kiro, [Available models](https://kiro.dev/docs/models/available-models/), [GPT-5.6 is now available in Kiro](https://kiro.dev/blog/gpt-5-6/), [Subagents](https://kiro.dev/docs/chat/subagents/)
 - Classmethod, [Kiro model list and credit multipliers](https://dev.classmethod.jp/en/articles/kiro-claude-sonnet-5-5-ga-model-list/), 2026-10-25
 - The Decoder, [Zhipu releases GLM-5 under MIT license](https://the-decoder.com/chinese-ai-lab-zhipu-releases-glm-5-under-mit-license-claims-parity-with-top-western-models/), 2026
 - Kilo, [GLM-5.2's Code Reviews Are Only as Good as Your Prompt](https://blog.kilo.ai/p/glm-52s-code-reviews-are-only-as), 2026
@@ -793,3 +837,4 @@ fi
 
 - 2026-11-02: 초안. 태스크·feature 2단계 리뷰, 리뷰 항목 8개, 커밋 없는 스냅샷 방식, 리뷰어 권한 구성, 도입 단계를 제안했습니다. 스크립트 6개와 Kiro 에이전트·steering 초안을 함께 추가했습니다.
 - 2026-11-04: v2. Claude Code 팀의 코드 리뷰 글과 대조하고 사내 Spec 세션 구조를 반영했습니다. 스냅샷 번호 규칙, 수정분 재리뷰와 `carried`, 재현 테스트 기반 수정 검증, `origin`·`fix_scope` 필드, FR-3 재정의(게이트 단계 테스트)와 오류 경로의 FR-2 이동, Spec 세션 역할 분담, 리뷰어 모델 결정(Opus 5.5 기본, GLM-5 비교), 다섯 가지 판정, 최종 확인 HTML 연동과 승인 스냅샷 비교, 리뷰어 회귀 테스트 스킬, 위험도 약속(제안)을 추가했습니다. 스크립트는 `review-lib.sh`로 공통 로직을 모으고 `review-status.sh`, `record-resolution.sh`, `review-approve.sh`, `review-export.mjs`, `eval-setup.sh`, `eval-score.mjs`를 추가했습니다.
+- 2026-11-04: v2 리뷰 반영. 1단계에서 늦게 고칠 때 재리뷰 범위에 다른 태스크 변경이 섞이던 문제를 `fixbase-<n>`(`review-begin.sh <task> --fix`)과 늦은 수정 절차(6.8절)로 고쳤습니다. gate가 실패한 채 smoke test로 넘어가면 리뷰하지 않게 하고, JaCoCo gate에 기준 검사 태스크를 넣도록 바꿨습니다. 리뷰어 회귀 테스트의 패치 규약을 start 상태 기준으로 맞추고 feature 사례에 target을 넘기게 했습니다. GPT-5.6 Sol 배율을 공식 값과 사내 확인값으로 나눠 적고, 장치를 붙이는 순서(8.4절)를 추가했습니다. 그 밖에 승인 비교의 `--index`, findings·판정 입력 검사, 지표 파일 기본 위치, bash 4 검사와 GNU 전용 옵션 제거를 반영했습니다.

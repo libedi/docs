@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 리뷰 스크립트들이 함께 쓰는 함수. 직접 실행하지 않고 source 한다.
+# bash 4 이상이 필요하다 (연관 배열). GNU 전용 옵션은 쓰지 않는다.
 #
 # 스냅샷 규칙: 같은 이름을 덮어쓰지 않고 번호를 붙인다.
 #   refs/worktree/review/<target>/start      태스크 시작 기준 (feature는 HEAD)
@@ -7,6 +8,9 @@
 #   refs/worktree/review/<target>/red-<n>    red 확인 시점 (태스크 안의 red, 수정 루프의 red)
 #   refs/worktree/review/<target>/done-<n>   검증 통과 시점. n이 곧 리뷰 회차
 #   refs/worktree/review/<target>/fail-<n>   done 검증이 실패한 시점 (증거로만 남기고 회차에 넣지 않는다)
+#   refs/worktree/review/<target>/gate-<n>   feature 게이트(JaCoCo 기준 검사) 시점. 가장 최근 것이 통과해야 리뷰한다
+#   refs/worktree/review/<target>/fixbase-<n> 태스크 지적을 고치기 시작한 시점의 _last. n회차 리뷰 범위의 시작
+#                                            (다른 태스크가 지나간 뒤 늦게 고쳐도 그 변경이 범위에 섞이지 않게 한다)
 #   refs/worktree/review/_last               가장 최근 done 스냅샷 (다음 태스크의 start). red는 갱신하지 않는다
 #
 # 기록은 워크트리별 git 디렉터리 아래 review/<target>/ 에 남는다.
@@ -14,7 +18,17 @@
 #   findings-<n>[.<tag>].json   n회차 리뷰 결과 (tag는 비교용 보조 리뷰어)
 #   resolutions.jsonl     사람이 판정한 결과
 
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "bash 4 이상이 필요합니다 (현재 $BASH_VERSION)" >&2
+  exit 2
+fi
+
 review_ns=refs/worktree/review
+
+# ISO 8601 시각 (GNU·BSD date 모두 동작)
+now_iso() {
+  date +%Y-%m-%dT%H:%M:%S%z
+}
 
 review_dir() {
   git rev-parse --git-path "review/$1"
@@ -77,7 +91,7 @@ write_result() {
     [[ -n $verdict ]] && echo "red=$verdict"
     echo "snapshot=$commit"
     echo "detail=$detail"
-    echo "at=$(date -Iseconds)"
+    echo "at=$(now_iso)"
   } > "$dir/$label.result"
 }
 
@@ -87,15 +101,22 @@ result_value() {
   sed -n "s/^$key=//p" "$file" | head -n 1
 }
 
-# 리뷰 범위. 1회차는 start→done-1, 2회차부터는 done-(n-1)→done-n (수정분만)
+# 리뷰 범위. 1회차는 start→done-1, 2회차부터는 수정분만
+#   fixbase-n이 있으면 fixbase-n→done-n (늦게 고친 경우에도 이 수정만)
+#   없으면 done-(n-1)→done-n (바로 고친 경우, feature)
 review_range() {
-  local target=$1 round
+  local target=$1 round fixbase
   round=$(current_round "$target")
   if [[ $round -eq 0 ]]; then
     return 1
   elif [[ $round -eq 1 ]]; then
     echo "$(review_ref "$target" start) $(review_ref "$target" done-1)"
   else
-    echo "$(review_ref "$target" "done-$((round - 1))") $(review_ref "$target" "done-$round")"
+    fixbase=$(review_ref "$target" "fixbase-$round")
+    if git show-ref --verify -q "$fixbase"; then
+      echo "$fixbase $(review_ref "$target" "done-$round")"
+    else
+      echo "$(review_ref "$target" "done-$((round - 1))") $(review_ref "$target" "done-$round")"
+    fi
   fi
 }

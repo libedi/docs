@@ -43,14 +43,17 @@ fi
 cat > "$out.tmp"
 
 if command -v jq > /dev/null 2>&1; then
-  if ! jq -e '
+  if ! jq -e --arg blocked "$blocked" '
       (.findings | type == "array") and
       all(.findings[];
         has("check") and has("severity") and has("origin") and has("evidence") and
         (.severity | IN("blocker","major","minor","question")) and
-        (.origin | IN("introduced","pre-existing")))' "$out.tmp" > /dev/null; then
+        (.origin | IN("introduced","pre-existing")) and
+        (if has("fix_scope") then (.fix_scope | IN("local","task")) else true end) and
+        (if $blocked == "" and (.severity | IN("blocker","major")) then has("fix_scope") else true end))' \
+      "$out.tmp" > /dev/null; then
     rm -f "$out.tmp"
-    echo "형식 오류: findings 배열의 각 항목에 check, severity(blocker|major|minor|question), origin(introduced|pre-existing), evidence가 있어야 합니다" >&2
+    echo "형식 오류: 각 항목에 check, severity(blocker|major|minor|question), origin(introduced|pre-existing), evidence가 있어야 하고, blocker·major는 fix_scope(local|task)도 있어야 합니다" >&2
     exit 2
   fi
 fi

@@ -6,12 +6,14 @@
 #   예) verify-and-snapshot.sh T3 red  :settlement:test --tests '*DiscountPolicyTest'  # 실패해야 정상
 #       verify-and-snapshot.sh T3 done :settlement:test                                # 태스크 완료 조건
 #       verify-and-snapshot.sh T4 done :settlement:compileJava                         # TDD 비대상 태스크
-#       verify-and-snapshot.sh feature gate jacocoTestReport                           # JaCoCo 태스크 (회차에 안 들어감)
+#       verify-and-snapshot.sh feature gate jacocoTestReport jacocoTestCoverageVerification
+#                                                                     # JaCoCo 태스크. 기준 검사 태스크를 포함해야 실패가 잡힌다
 #       verify-and-snapshot.sh feature done build                                      # smoke test = feature 스냅샷
 #
 # 스냅샷은 덮어쓰지 않고 번호가 붙는다(red-1, red-2, done-1, done-2 ...).
 #   - done 검증이 실패하면 fail-n으로 남는다. done-n은 통과한 검증만이다.
-#   - red, done 외의 phase(예: gate)는 증거로만 남고 리뷰 회차에 들어가지 않는다.
+#   - red, done 외의 phase(예: gate)는 리뷰 회차에 들어가지 않는다. 단 가장 최근 gate가 실패했으면 리뷰하지 않는다.
+#   - 다른 태스크가 지나간 뒤 지적을 고칠 때는 먼저 review-begin.sh <task> --fix 를 부른다.
 #   - 한 태스크 안에서 red를 여러 번 확인해도 모두 남는다.
 #   - 리뷰 지적을 고칠 때의 red도 따로 남는다. 이 red가 실패하지 않으면(exit 3) 지적한 버그가 재현되지 않은 것이다.
 #   - done-n의 n이 리뷰 회차다. 2회차부터는 done-(n-1)→done-n 차이만 리뷰한다.

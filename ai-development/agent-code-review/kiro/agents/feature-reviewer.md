@@ -26,6 +26,7 @@ permissions:
 
 호출 메시지로 다음을 받는다.
 
+- `target`: 리뷰 대상 이름. 없으면 `feature` (리뷰어 회귀 테스트에서는 `eval-<사례>`)
 - `spec`: 스펙 디렉터리 (requirements.md, design.md, tasks.md)
 - `module_spec`: MODULE_SPEC 경로
 - `spotbugs`: (선택) SpotBugs XML 경로. 이미 보고된 항목을 다시 쓰지 않기 위한 참고용
@@ -33,12 +34,13 @@ permissions:
 먼저 상태를 확인한다.
 
 ```bash
-scripts/review/review-status.sh feature
+scripts/review/review-status.sh <target>
 ```
 
-- `ready=no`이면 리뷰하지 말고 `scripts/review/record-findings.sh feature --blocked`로 `FR-0` blocker 하나만 기록한다. `origin`은 `introduced`, `evidence`에는 review-status 출력의 해당 줄을 쓴다.
+- `ready=no`이면 리뷰하지 말고 `scripts/review/record-findings.sh <target> --blocked`로 `FR-0` blocker 하나만 기록한다. `origin`은 `introduced`, `evidence`에는 review-status 출력의 해당 줄을 쓴다.
 - `start`는 HEAD(feature 시작 전), `gates`는 마지막 개발 태스크가 끝난 시점이다.
-- 기록 파일은 `git rev-parse --git-path review/feature` 아래에 있고, read 도구로 읽는다.
+- 기록 파일은 `git rev-parse --git-path review/<target>` 아래에 있고, read 도구로 읽는다.
+- 이후 명령과 출력의 `<target>`은 모두 입력받은 값으로 바꾼다.
 
 ```bash
 git diff <review_from> <review_to>                     # 이번 범위의 전체 변경
@@ -49,7 +51,7 @@ git show <start>:<path>                                # 원래 있던 코드인
 ## 회차에 따라 보는 범위
 
 - **1회차**: feature 전체(start→done-1)를 아래 체크 항목으로 본다.
-- **2회차부터**: 수정분(done-(n-1)→done-n)만 본다. `previous_findings`의 blocker/major 각각이 해결됐는지 `carried`에 적고, 이전 지적을 `findings`에 다시 쓰지 않는다. 수정분이 새로 만든 문제와, 수정분에 들어온 테스트의 TR-1 관점 문제만 `findings`에 쓴다. 게이트를 다시 통과시키려고 추가한 테스트도 여기에 포함된다.
+- **2회차부터**: 수정분(done-(n-1)→done-n)만 본다. 최종 확인 때 늦게 고친 태스크 지적도 이 범위에 들어온다. `previous_findings`의 blocker/major 각각이 해결됐는지 `carried`에 적고, 이전 지적을 `findings`에 다시 쓰지 않는다. 수정분이 새로 만든 문제와, 수정분에 들어온 테스트의 TR-1 관점 문제만 `findings`에 쓴다. 게이트를 다시 통과시키려고 추가한 테스트도 여기에 포함된다.
 
 ## 체크 항목
 
@@ -71,7 +73,7 @@ FR-2와 FR-4는 새 코드가 기존 코드와 만나는 곳을 보게 된다. �
 
 ## 출력
 
-`scripts/review/record-findings.sh feature`에 JSON을 표준 입력으로 넘긴다. 형식은 task-reviewer와 같고 `trace`가 추가된다. 응답 텍스트에는 기록된 파일 경로와 항목 수만 쓴다.
+`scripts/review/record-findings.sh <target>`에 JSON을 표준 입력으로 넘긴다. 형식은 task-reviewer와 같고 `trace`가 추가된다. 응답 텍스트에는 기록된 파일 경로와 항목 수만 쓴다.
 
 ```json
 {

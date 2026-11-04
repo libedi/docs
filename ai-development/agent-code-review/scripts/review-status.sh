@@ -6,11 +6,11 @@
 #
 # 출력 (key=value)
 #   round=<n>                 기록된 done 수. 이번 리뷰가 n회차
-#   review_from / review_to   이번 회차의 리뷰 범위 (1회차: start→done-1, 2회차부터: done-(n-1)→done-n)
+#   review_from / review_to   이번 회차의 리뷰 범위 (1회차: start→done-1, 2회차부터: fixbase-n 또는 done-(n-1)→done-n)
 #   reds=<ref ...>            1회차: 태스크 안의 red 전부 / 2회차부터: 직전 done 이후의 red(수정 루프의 red)
 #   previous_findings=<path>  직전 회차 findings (2회차부터)
 #   gates=<ref>               feature 전용. 게이트 단계 변경의 기준
-#   ready=yes|no              리뷰해도 되는지 (최신 done이 통과했고, 그 뒤에 실패한 검증이 없는가)
+#   ready=yes|no              리뷰해도 되는지 (최신 done이 통과했고, 그 뒤에 실패한 검증이 없고, 가장 최근 gate가 통과했는가)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=review-lib.sh
@@ -26,6 +26,8 @@ for name in start gates; do
   ref=$(review_ref "$target" "$name")
   git show-ref --verify -q "$ref" && echo "$name=$ref"
 done
+ref=$(review_ref "$target" "fixbase-$(current_round "$target")")
+git show-ref --verify -q "$ref" && echo "fixbase=$ref"
 
 # 스냅샷 기록을 순번대로
 declare -A seq_of=() exit_of=()
@@ -70,9 +72,19 @@ for label in "${!seq_of[@]}"; do
   [[ $label == red-* || ${exit_of[$label]} == 0 ]] && continue
   if (( ${seq_of[$label]} > latest_fail )); then latest_fail=${seq_of[$label]}; fi
 done
+# gate가 있으면 가장 최근 gate가 통과해야 한다 (gate 실패 후 다시 돌리지 않고 smoke로 넘어간 경우)
+latest_gate_seq=0 latest_gate_exit=0
+for label in "${!seq_of[@]}"; do
+  [[ $label == gate-* ]] || continue
+  if (( ${seq_of[$label]} > latest_gate_seq )); then
+    latest_gate_seq=${seq_of[$label]}
+    latest_gate_exit=${exit_of[$label]}
+  fi
+done
 rc=$(result_value "$dir/done-$round.result" exit_code 2>/dev/null || true)
-if [[ $rc == 0 ]] && (( latest_fail < latest_seq )); then
+if [[ $rc == 0 ]] && (( latest_fail < latest_seq )) && [[ $latest_gate_exit == 0 ]]; then
   echo "ready=yes"
 else
+  [[ $latest_gate_exit != 0 ]] && echo "reason=가장 최근 gate가 실패함"
   echo "ready=no"
 fi

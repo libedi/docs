@@ -32,10 +32,14 @@ esac
 cd "$(git rev-parse --show-toplevel)"
 dir=$(review_dir "$target")
 [[ -e $dir/findings-$round.json ]] || { echo "findings-$round.json 이 없습니다: $target" >&2; exit 2; }
+if command -v jq > /dev/null 2>&1; then
+  count=$(jq '.findings | length' "$dir/findings-$round.json")
+  (( index < count )) || { echo "index $index 가 범위를 벗어났습니다 (findings-$round.json 항목 수: $count)" >&2; exit 2; }
+fi
 
 esc=${note//\\/\\\\}
 esc=${esc//\"/\\\"}
 esc=$(printf '%s' "$esc" | tr -d '\000-\037')
 printf '{"target":"%s","round":%s,"index":%s,"resolution":"%s","note":"%s","at":"%s"}\n' \
-  "$target" "$round" "$index" "$resolution" "$esc" "$(date -Iseconds)" >> "$dir/resolutions.jsonl"
+  "$target" "$round" "$index" "$resolution" "$esc" "$(now_iso)" >> "$dir/resolutions.jsonl"
 echo "$target 회차 $round #$index → $resolution"

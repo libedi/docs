@@ -30,12 +30,14 @@ inclusion: always
 
 메인이 넘긴 findings 파일을 직접 읽는다. 메인의 요약이 아니라 파일의 `evidence`, `why`, `next`를 따른다.
 
-1. 지적한 문제를 재현하는 테스트를 먼저 쓴다(로직 문제). 테스트 기대값을 되돌리는 경우(TR-2)는 되돌린 상태가 재현 테스트다.
-2. `verify-and-snapshot.sh <target> red :<module>:test`
+1. 태스크 지적이면 먼저 `scripts/review/review-begin.sh <task> --fix`를 실행한다. 다른 태스크나 feature 게이트가 지나간 뒤에 고쳐도 재리뷰 범위에 이 수정만 들어간다. feature 지적이면 생략한다.
+2. 지적한 문제를 재현하는 테스트를 먼저 쓴다(로직 문제). 테스트 기대값을 되돌리는 경우(TR-2)는 되돌린 상태가 재현 테스트다.
+3. `verify-and-snapshot.sh <target> red :<module>:test`
    - exit 3(재현 실패)이면 고치지 말고 멈춘다. "재현 실패"와 재현 테스트 경로를 보고한다.
-3. 고친 뒤 원래 완료 조건으로 `done`을 다시 실행한다. feature 단계의 수정이면 JaCoCo 태스크와 smoke test를 다시 실행한다(아래 feature 마지막 2~3단계).
-4. 지적에 동의하지 않으면 고치지 말고 근거를 보고한다.
-5. `origin: pre-existing` 지적은 고치지 않는다.
+4. 고친 뒤 원래 완료 조건으로 `done`을 다시 실행한다.
+5. feature 게이트가 이미 지나간 뒤의 수정이면(feature 지적, 또는 최종 확인 때 늦게 고친 태스크 지적) JaCoCo 태스크와 smoke test를 다시 실행한다(아래 feature 마지막 2~3단계).
+6. 지적에 동의하지 않으면 고치지 말고 근거를 보고한다.
+7. `origin: pre-existing` 지적은 고치지 않는다.
 
 ## 메인: 태스크마다
 
@@ -55,23 +57,32 @@ inclusion: always
 ## feature 마지막
 
 1. 마지막 개발 태스크가 끝나면 태스크 에이전트가 `scripts/review/review-begin.sh feature`를 실행한다.
-2. JaCoCo 태스크: `scripts/review/verify-and-snapshot.sh feature gate <jacoco 태스크>`
+2. JaCoCo 태스크: `scripts/review/verify-and-snapshot.sh feature gate jacocoTestReport jacocoTestCoverageVerification` (커버리지 기준을 검사하는 태스크를 반드시 포함한다. 리포트만 만드는 태스크는 기준 미달에도 실패하지 않는다)
 3. smoke test 태스크: `scripts/review/verify-and-snapshot.sh feature done build`
 4. 메인이 `feature-reviewer`에 spec, MODULE_SPEC, SpotBugs XML 경로를 넘긴다.
 5. findings 처리 규칙은 태스크와 같다. 수정이 들어가면 2~3단계를 다시 실행한 뒤 재리뷰한다. FR-4 승격 후보는 MODULE_SPEC에 쓰지 말고 사람에게 목록으로 보고한다.
 
+## 1단계에서 최종 확인 때 고치는 경우
+
+1단계는 지적을 모았다가 최종 확인에서 사람이 고칠 것을 고른다. 고르면 다음 순서로 처리한다.
+
+1. 태스크 지적마다: 태스크 에이전트가 "지적을 고칠 때" 절차로 수정(`--fix`부터) → 메인이 task-reviewer 재리뷰
+2. 모든 태스크 지적이 끝나면: JaCoCo 태스크와 smoke test를 다시 실행 → 메인이 feature-reviewer 재리뷰 (늦게 고친 태스크 수정이 feature 범위에 들어간다)
+3. feature 지적을 고치는 경우도 2단계 안에서 함께 처리한다
+4. 재리뷰 결과를 최종 확인에 다시 올린다
+
 ## 최종 확인과 커밋
 
 1. 최종 확인 HTML을 만든다. 코드 변경 설명은 기억이 아니라 `git diff refs/worktree/review/feature/start <최신 feature done>`으로 만든다. 다음을 반드시 넣는다.
-   - 승인 대상 스냅샷 id (`review-status.sh feature`의 `review_to`)
+   - 승인 대상 스냅샷 id (`review-status.sh feature`의 `review_to`. 늦은 수정이 있었다면 그 뒤의 최신 값)
    - 모든 회차의 지적 목록(대상, 회차, index, check, severity, origin)과 판정 요청: fixed / wrong / intentional / minor / harmful
    - FR-1 추적표의 빈칸, FR-4 승격 후보, `pre-existing` 백로그 후보
 2. 사람이 답하면 태스크 에이전트가 판정을 기록하고 승인을 표시한다.
    - `scripts/review/record-resolution.sh <target> <round> <index> <resolution> [메모]`
    - `scripts/review/review-approve.sh mark <승인 스냅샷>`
 3. 문서 업데이트 태스크(백로그, 가이드, MODULE_SPEC)를 진행한다.
-4. 커밋 직전: `scripts/review/review-approve.sh check <문서 경로들>`. exit 1이면 커밋하지 말고 사람에게 알린다.
-5. 커밋 후: `node scripts/review/review-export.mjs <지표 파일>` → `scripts/review/review-cleanup.sh`
+4. 커밋 직전: `scripts/review/review-approve.sh check <문서 경로들>`. exit 1이면 커밋하지 말고 사람에게 알린다. (pre-commit 훅에 넣을 때는 `check --index`)
+5. 커밋 후: `node scripts/review/review-export.mjs` (기본 위치: 메인 저장소 git 디렉터리의 `review-metrics.jsonl`) → `scripts/review/review-cleanup.sh`
 
 ## 편집 규칙
 
