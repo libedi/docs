@@ -20,6 +20,7 @@ permissions:
         - "git for-each-ref *"
         - "scripts/review/review-status.sh *"
         - "scripts/review/logic-candidates.sh *"
+        - "scripts/review/pbt-candidates.sh *"
         - "scripts/review/record-findings.sh *"
 ---
 
@@ -49,6 +50,7 @@ git diff <review_from> <review_to>                                # 이번 범�
 git diff <red> <review_to> -- '*src/test/**'                      # tdd: reds 각각에 대해, red 이후 테스트 변경
 git show <review_from>:<path>                                     # 원래 있던 코드인지 확인할 때
 scripts/review/logic-candidates.sh <task>                         # non-tdd: 로직 후보
+scripts/review/pbt-candidates.sh <task>                           # tdd: 속성 테스트 약화 후보, 테스트 설정 변경
 ```
 
 ## 회차에 따라 보는 범위
@@ -61,7 +63,11 @@ scripts/review/logic-candidates.sh <task>                         # non-tdd: 로
 `type: tdd`이면 TR-1, TR-2, TR-3을, `type: non-tdd`이면 TR-3, TR-4를 본다.
 
 - **TR-1 테스트가 AC를 실제로 검증하는가.** 값을 보지 않는 단언(`isNotNull`만 있음), 구현과 같은 공식으로 기대값을 계산하는 단언, 무엇을 저장했는지 보지 않는 `verify(...).save(any())`, AC의 경계값이 빠진 경우를 찾는다.
+  - AC 문장과 테스트의 해석을 직접 대조한다. "이상"을 "초과"로, "포함"을 "제외"로 읽는 것처럼 테스트와 구현이 처음부터 다른 해석으로 일관되면 Red→Green이 정상이어도 AC 위반이다. 스펙 문장이 모호해서 생긴 것이면 `question`으로 적는다.
+  - 속성 테스트(`@Property`)는 속성이 구현과 같은 식인지(오라클 중복), 생성 범위가 AC의 경계를 포함하는지, `pbt-candidates.sh`의 "새로 들어온 약화 설정"(`tries`, `seed`, `edgeCases`, `Assume`, `filter`)이 이유 주석 없이 쓰였는지 본다.
 - **TR-2 Red 이후 테스트가 구현에 맞춰 바뀌지 않았는가.** 각 red→done 사이의 테스트 diff에서 기대값 변경, 테스트 삭제, `@Disabled` 추가, 경계 조건 완화(이상→초과 등), 단언 약화를 찾는다. 변경이 있으면 스펙에 근거가 있는지 확인한다. 근거가 없으면 blocker다. refactor 단계에서 생긴 구조 변경(헬퍼·픽스처 추출, 이름 변경, 순서 변경)은 단언의 의미가 같으면 TR-2가 아니다.
+  - 속성 테스트는 단언을 그대로 두고 입력 공간을 줄여도 통과한다. `pbt-candidates.sh`의 "red 이후 테스트 변경"(생성 범위 축소, `Assume`·`filter` 추가, `tries` 감소, `edgeCases` 끄기, `seed` 고정)을 하나씩 보고, 스펙 근거가 없으면 blocker다.
+  - 테스트 설정 파일(`build.gradle`, `junit-platform.properties`) 변경이 태스크 범위에 없으면 TR-3으로 적는다.
 - **TR-3 범위 밖의 코드가 들어왔는가.** tasks.md의 이 태스크 설명과 연결된 AC로 설명되지 않는 변경을 찾는다. AC에 없는 동작 추가, 상관없는 클래스 수정, 요청하지 않은 캐시·리팩터링이 해당한다.
 - **TR-4 TDD 비대상 태스크에 로직이 들어왔는가.** `logic-candidates.sh` 후보 중 분기·검증·계산이 실제 비즈니스 규칙인지 판단한다. 규칙이면 `fix_scope: task`로 기록한다(TDD 태스크로 옮겨야 함). 단순 null 방어나 equals/hashCode는 제외한다.
 

@@ -17,6 +17,7 @@ permissions:
         - "git rev-parse *"
         - "git for-each-ref *"
         - "scripts/review/review-status.sh *"
+        - "scripts/review/pbt-candidates.sh *"
         - "scripts/review/record-findings.sh *"
 ---
 
@@ -40,6 +41,8 @@ scripts/review/review-status.sh <target>
 - `ready=no`이면 리뷰하지 말고 `scripts/review/record-findings.sh <target> --blocked`로 `FR-0` blocker 하나만 기록한다. `origin`은 `introduced`, `evidence`에는 review-status 출력의 해당 줄을 쓴다.
 - `start`는 HEAD(feature 시작 전), `gates`는 마지막 개발 태스크가 끝난 시점이다.
 - 기록 파일은 `git rev-parse --git-path review/<target>` 아래에 있고, read 도구로 읽는다.
+- AC 대조 결과는 같은 곳의 `trace-<review_to의 라벨>.json`이다(예: `review_to`가 `.../done-2`면 `trace-done-2.json`). 스크립트는 예외로 멈춰도 파일을 남기므로, 파일이 없다는 것은 대조 단계를 건너뛰었다는 뜻이다. 그때는 리뷰하지 말고 `FR-0` blocker 하나만 `--blocked`로 기록한다. 평가 사례(`eval-`)처럼 대조 결과를 만들지 않는 대상은 이 확인을 건너뛴다.
+- trace에 `crashed: true`나 오류가 있으면 그 오류를 findings로 옮기고(아래 FR-1), 나머지 항목(FR-2~4)은 그대로 본다.
 - 이후 명령과 출력의 `<target>`은 모두 입력받은 값으로 바꾼다.
 
 ```bash
@@ -55,9 +58,16 @@ git show <start>:<path>                                # 원래 있던 코드인
 
 ## 체크 항목
 
-- **FR-1 AC ↔ 테스트 ↔ 코드 추적.** requirements.md의 모든 AC에 대해 검증하는 테스트와 구현 위치를 찾는다. 테스트나 구현이 없는 AC, 어떤 AC로도 설명되지 않는 분기·동작을 기록한다. 추적표는 `trace` 필드에 함께 남긴다(1회차만).
+- **FR-1 AC ↔ 테스트 ↔ 코드 추적.** AC와 테스트의 연결은 `trace-*.json`이 이미 대조했다. 직접 다시 찾지 않는다.
+  - `errors`와 상태가 `unlinked`·`failed`·`partial`·`not-run`인 AC는 그대로 findings로 옮기고 `"source": "trace"`를 붙인다(`evidence`에 trace의 해당 항목). 스크립트가 낸 사실이라 리뷰어 판단의 채택률과 따로 집계한다. `withdrawn`(취소선으로 지운 AC)은 옮기지 않는다.
+  - 아래 의미 판단에서 나온 지적에는 `source`를 붙이지 않는다.
+  - 연결된 테스트(`properties[].tests`, `acs[].direct_tests`)가 AC 문장의 의미를 실제로 검증하는지 판단한다. 테스트 이름이나 표시가 맞아도 단언이 다른 것을 보면 지적한다.
+  - `via: reuse`로 연결된 테스트는 재사용한 속성이 새 AC의 의미까지 덮는지 판단한다. 기존 속성이 다른 입력 범위나 다른 조건만 다루면 지적한다.
+  - `unmarked_tests`는 `minor`로 묶어 하나만 적는다.
+  - 어떤 AC로도 설명되지 않는 분기·동작(코드는 있는데 AC가 없음)은 diff를 보고 직접 찾는다.
+  - `trace` 필드에는 trace 파일 경로만 적는다(1회차만).
 - **FR-2 태스크 사이 이음새와 오류 경로.** 태스크 경계를 넘는 흐름에서 트랜잭션 경계(롤백되는데 외부 부수효과가 이미 일어남), 예외 전파(던지는 예외와 잡는 쪽의 skip/retry 정책 불일치), 배치 재시작과 멱등성(재실행 시 중복 생성)을 본다. 새 코드의 오류 경로도 본다. 예외를 잡아 로그만 남기고 삼키는 catch, 테스트가 전혀 지나지 않는 skip·retry 경로가 해당한다.
-- **FR-3 게이트 단계에서 추가된 테스트.** `gates`→`done-1` 사이에 바뀐 테스트(JaCoCo 기준을 맞추려고 추가한 테스트 등)에 TR-1 기준을 적용한다. 값을 보지 않는 단언, 실행만 하고 아무것도 확인하지 않는 테스트, 구현과 같은 공식으로 기대값을 만드는 테스트를 찾는다.
+- **FR-3 게이트 단계에서 추가된 테스트.** `gates`→`done-1` 사이에 바뀐 테스트(JaCoCo 기준을 맞추려고 추가한 테스트 등)에 TR-1 기준을 적용한다. 값을 보지 않는 단언, 실행만 하고 아무것도 확인하지 않는 테스트, 구현과 같은 공식으로 기대값을 만드는 테스트를 찾는다. 게이트에서 tries 1000으로 실패한 속성을 통과시키려고 들어온 약화(`pbt-candidates.sh <target>`)도 여기서 본다.
 - **FR-4 설계·MODULE_SPEC 정합성과 승격 후보.** design.md의 설계 결정과 MODULE_SPEC의 도메인 규칙을 어긴 코드를 찾는다. 구현 중 새로 생겼지만 스펙에 없는 규칙은 `severity: question`, `check: FR-4`로 승격 후보로 기록한다.
 
 ## 이번 변경인가, 원래 있던 것인가
@@ -80,10 +90,7 @@ FR-2와 FR-4는 새 코드가 기존 코드와 만나는 곳을 보게 된다. �
   "target": "feature",
   "round": 1,
   "carried": [],
-  "trace": [
-    { "ac": "AC-1.1", "tests": ["SettlementWriterTest#writesOncePerItem"], "code": ["settlement/src/main/java/com/example/settlement/SettlementWriter.java:31"] },
-    { "ac": "AC-1.3", "tests": [], "code": [] }
-  ],
+  "trace": ".git/review/feature/trace-done-1.json",
   "findings": [
     {
       "check": "FR-2",
