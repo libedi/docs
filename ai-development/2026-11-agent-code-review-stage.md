@@ -298,19 +298,21 @@ public record Money(long amount) {
 | 테스트 → 실행 결과 | test-results XML |
 | 테스트가 AC의 의미를 검증하는가 | 리뷰어 (TR-1, FR-1) |
 
-[`spec-trace.mjs`](agent-code-review/scripts/spec-trace.mjs)가 위 다섯 고리를 대조해 AC마다 `통과 / 실패 / 미실행 / 연결 없음 / STC 제외` 상태를 내고, smoke test 직후 `review/feature/trace-done-<n>.json`으로 남깁니다. feature 리뷰어는 이 파일을 입력으로 받습니다.
+[`spec-trace.mjs`](agent-code-review/scripts/spec-trace.mjs)가 위 다섯 고리를 대조해 AC마다 `통과 / 일부 미실행 / 실패 / 미실행 / 연결 없음 / STC 제외 / 철회` 상태를 내고, smoke test 직후 `review/feature/trace-done-<n>.json`으로 남깁니다. 연결된 테스트가 모두 통과해야 `통과`이고, 하나라도 미실행·건너뜀이면 `일부 미실행`입니다. 파서가 낯선 소스에서 예외로 멈춰도 오류(`crash`)를 담은 파일을 남깁니다. feature 리뷰어는 이 파일을 입력으로 받습니다.
 
 #### 읽는 형식 (사내 스펙 기준)
 
 - **requirements.md**: `### Requirement <N>: 제목` 아래 `#### Acceptance Criteria`, 그 아래 줄 맨 앞의 `<n>. `이 AC `N.n`입니다. EARS 절마다 줄바꿈한 이어지는 줄(들여쓰기)은 같은 항목으로 묶습니다.
 - **design.md**: `### Property <N>: 제목` 절 안의 `**Validates: Requirements 4.1, 4.3**`. 기존 테스트를 재사용하면 `**Reuses: <테스트 클래스> (Feature: <원래 feature>, Property 4, 11)**`를 둡니다.
 - **tasks.md**: `_Requirements: 1.2, 1.3_`(대소문자 무관), `**Property <N>: …** - **Validates: Requirements …**`, `STC 적용 제외`. STC 제외 태스크만 가리키는 AC는 테스트 연결을 요구하지 않습니다(`STC 제외`).
-- **테스트**: `*PropertyTest.java`의 `@Tag("Feature: <이름>, Property <N>: …")`가 Property 연결입니다. 예시 테스트는 javadoc의 `**Validates: Requirements 1.3, 1.7**`나 `@DisplayName`·`@Label`의 `(AC 4.1, 4.4)`를 AC 직접 연결로 읽습니다. 클래스에 붙은 표시는 그 클래스의 모든 테스트 메서드에 적용합니다.
+- **테스트**: `*PropertyTest.java`의 `@Tag("Feature: <이름>, Property <N>: …")`가 Property 연결입니다. 예시 테스트는 javadoc의 `**Validates: Requirements 1.3, 1.7**`나 `@DisplayName`·`@Label`의 `(AC 4.1, 4.4)`를 AC 직접 연결로 읽고, `**Validates: Requirements 1.3 (Feature: <이름>)**`처럼 feature를 담은 표시도 읽습니다. 클래스에 붙은 표시는 그 클래스의 모든 테스트 메서드에 적용합니다.
+- **취소선 AC**: 본문이 `~~`로 시작하는 AC는 지운 AC(`철회`)로 보고 태스크·테스트 연결을 요구하지 않습니다. 번호는 그대로 차지합니다. tasks나 테스트가 지운 AC를 가리키면 경고합니다.
 - **Feature 이름**: 스펙 디렉터리 이름에서 앞의 인덱스를 뺀 값입니다(`.kiro/specs/<SpecModuleKey>/01-<SpecDirectoryName>` → `<SpecDirectoryName>`).
 
 #### 규칙
 
-- **AC 번호만 적힌 표시는 이번 feature에서 바뀐 테스트 파일에서만 인정합니다.** `(AC 4.1)`은 어느 feature의 4.1인지 말하지 않습니다. 저장소 전체에서 인정하면 예전 feature 테스트의 `(AC 4.1)`이 이번 AC 4.1을 덮은 것처럼 보입니다. Property 태그는 feature 이름을 담고 있어 저장소 전체에서 찾습니다.
+- **AC 번호만 적힌 표시는 이번 feature에서 바뀐 테스트 파일에서만 인정합니다.** `(AC 4.1)`은 어느 feature의 4.1인지 말하지 않습니다. 저장소 전체에서 인정하면 예전 feature 테스트의 `(AC 4.1)`이 이번 AC 4.1을 덮은 것처럼 보입니다. Property 태그와 `(Feature: <이름>)`을 담은 표시는 feature가 분명하므로 범위와 상관없이 그 feature에서만 인정합니다. 범위 제한은 feature가 없는 표시의 대체 규칙입니다.
+- **feature를 담은 표시는 지금은 필요한 곳에만 씁니다.** 이번 feature에서 고치지 않는 기존 테스트를 이번 AC에 연결할 때, 다른 feature의 AC 표시가 있는 파일을 고칠 때입니다. 모든 표시에 feature를 넣을지는 표시가 길어지는 비용이 있어서, 1단계에서 잘못 집계되는 경우가 실제로 나오면 정합니다(13장).
 - **재사용은 주장이므로 확인 대상입니다.** 스크립트는 `Reuses`가 가리키는 테스트가 있고 이번 실행에서 통과했는지만 봅니다. 재사용한 속성이 새 AC의 의미까지 덮는지는 리뷰어가 판단합니다.
 - **스펙 승인 뒤에는 AC 번호를 바꾸지 않습니다.** requirements.md의 AC에는 ID가 적혀 있지 않고, `N.n`은 위치에서 나옵니다. 중간에 AC를 넣거나 빼면 뒤 번호가 밀려 테스트 표시가 다른 AC를 가리킵니다. 삭제는 취소선으로 남기고, 추가는 끝에 붙입니다. 스크립트는 번호가 연속되지 않으면 경고합니다.
 - **형식이 깨지면 조용히 통과하지 않습니다.** AC를 하나도 못 읽으면 오류로 멈춥니다(`no-ac-parsed`). 없는 AC·Property를 가리키는 참조, 재사용 대상이 없는 경우도 오류입니다. 형식이 바뀌어 대조가 0건으로 "통과"되는 것이 가장 위험한 실패이기 때문입니다.
@@ -422,16 +424,18 @@ tries는 이렇게 넘깁니다. jqwik은 설정을 JUnit Platform 설정 파라
 
 ```groovy
 test {
-    // 태스크 단계 200, feature 게이트에서는 -PpbtTries=1000
+    // 태스크 단계 200, feature 게이트와 smoke test에서는 -PpbtTries=1000
     systemProperty 'jqwik.tries.default', findProperty('pbtTries') ?: '200'
 }
 ```
+
+게이트와 smoke test에는 같은 값을 넘깁니다. `systemProperty` 값은 Gradle test 태스크의 입력이라, 값이 다르면 smoke test에서 전체 테스트가 다시 돌고 AC 대조가 읽는 결과도 200회 실행 결과가 됩니다. 같은 값이면 test 태스크가 UP-TO-DATE로 건너뛰고 게이트 실행 결과가 남습니다.
 
 **근거**
 
 - **검증 강도를 검증받는 쪽이 정하면 약화와 구분할 수 없습니다.** 에이전트가 테스트마다 tries를 정하면, 속도 때문에 200으로 둔 것과 실패 입력을 피하려고 줄인 것이 diff에서 똑같이 보입니다. 정책 값을 코드 밖으로 빼면 코드에 `tries =`가 새로 나타나는 것 자체가 신호가 됩니다.
 - **속도와 탐지력을 단계로 나눕니다.** 태스크 루프는 red/green을 빨리 확인하는 곳이라 200회로 충분합니다. 버그를 찾는 역할은 게이트의 1000회가 맡습니다. 지금은 에이전트가 정한 100~200회가 최종 강도인데, 이 방식에서는 게이트에서 한 번 더 걸러집니다.
-- **기존 테스트의 `tries =`는 별도 커밋으로 한 번에 지웁니다.** 어노테이션 값이 전역 설정보다 우선이라, 남겨 두면 그 속성들은 게이트에서도 100~200회로만 돕니다. 지우는 변경은 강도를 올리는 쪽이라 `pbt-candidates.sh`가 신호로 잡지 않습니다(추가·변경만 봄).
+- **기존 테스트의 `tries =`는 별도 커밋으로 한 번에 지웁니다.** 어노테이션 값이 전역 설정보다 우선이라, 남겨 두면 그 속성들은 게이트에서도 100~200회로만 돕니다. 일괄 삭제 커밋은 feature 작업 밖에서 하므로 리뷰 범위에 섞이지 않습니다. feature 안에서 `tries`를 지우면 `pbt-candidates.sh`가 `[-]` 줄로 보여주고, 기본값보다 큰 값(예: 2000)을 지운 경우처럼 오히려 약해지는지는 리뷰어가 판단합니다.
 - **1000회가 체감될 만큼 느리면 tries보다 속성의 경계를 봅니다.** 순수 도메인 객체를 다루는 속성은 1000회도 보통 금방 끝납니다. 느리다면 속성 하나가 매번 Spring 컨텍스트나 무거운 mock, 외부 연동을 거치고 있을 수 있습니다.
 - **`@Tag` 값은 실행 시점의 태그가 아니라 소스의 메타데이터입니다.** JUnit 태그 규칙상 공백과 쉼표가 들어간 태그는 무효라 경고 후 무시됩니다. Kiro가 만드는 관례라 바꾸지 않고, `spec-trace.mjs`는 소스를 정적으로 읽어 씁니다. `includeTags`로 속성만 골라 돌리는 용도로는 쓸 수 없습니다.
 
@@ -529,7 +533,7 @@ ready=yes
 | 비즈니스 로직 (TDD) | 모듈 `test` | start / red-n (하나 이상) / done-n | TR-1, TR-2, TR-3 |
 | 인터페이스·VO | `compileJava` | start / done-n | TR-3, TR-4 |
 | JaCoCo report | `test`(tries 1000) + 커버리지 기준 검사 (`jacocoTestCoverageVerification` 등) | feature/gate-n | – |
-| smoke test | `build` (+ SpotBugs), 직후 `spec-trace.mjs --record feature` | feature/start(HEAD) / gates / done-n | FR-1 ~ FR-4 |
+| smoke test | `build -PpbtTries=1000` (+ SpotBugs), 직후 `spec-trace.mjs --record feature` | feature/start(HEAD) / gates / done-n | FR-1 ~ FR-4 |
 
 JaCoCo gate에는 커버리지 기준을 검사하는 태스크가 들어가야 합니다. `jacocoTestReport`는 리포트만 만들고 기준에 못 미쳐도 실패하지 않습니다. 사내에서 기준을 검사하는 태스크 이름은 확인이 필요합니다(13장).
 
@@ -668,6 +672,7 @@ permissions:
 | --- | --- | --- |
 | `severity` | blocker / major / minor / question | 수정 루프 진입 여부 |
 | `origin` | introduced / pre-existing | pre-existing은 백로그로 (4.10절) |
+| `source` | (없음) / trace | trace는 `spec-trace.mjs`가 낸 사실을 옮긴 지적. 리뷰어 판단의 채택률과 따로 집계 (8.3절) |
 | `fix_scope` | local / task | local은 태스크 에이전트, task는 사람 → 스펙 에이전트 |
 | `location` | 저장소 기준 전체 경로:줄 | 사람 확인, 회귀 테스트 채점 |
 | `carried` | 이전 회차 지적의 상태 (resolved / unresolved / not-reproduced) | 2회차부터. 같은 지적을 반복하지 않게 함 |
@@ -797,7 +802,7 @@ fi
 
 ### 8.3 잴 것
 
-- `check` 항목별 채택률 (fixed ÷ 판정된 지적)과 판정 분포
+- `check` 항목별 채택률 (fixed ÷ 판정된 지적)과 판정 분포. `source: trace` 지적은 기계 결과라 따로 셉니다. 섞으면 리뷰어가 의미를 잘 판단하는지 볼 수 없습니다
 - 대상별 회차 수 (1회차에 통과한 비율, 상한에 닿은 비율)
 - 리뷰를 통과했는데 나중에 사람이 발견한 결함 (리뷰가 놓친 것 → 9장의 사례로 추가)
 - 리뷰 1회당 소요 시간과 크레딧
@@ -811,7 +816,7 @@ fi
 
 | 순서 | 켜는 것 | 이때 확인할 것 |
 | --- | --- | --- |
-| 시범 1 (첫 feature 1~2개) | 스냅샷(`review-lib`, `review-begin`, `verify-and-snapshot`), `review-status`, `record-findings`, `logic-candidates`, `pbt-candidates`, `spec-trace`(리포트만), `review-cleanup`, 리뷰어 2개, 절차 steering | 13장 상위 항목: 메인이 리뷰어를 부를 수 있는지, 리뷰 기록을 읽을 수 있는지, 권한 패턴이 의도대로 막는지 |
+| 시범 1 (첫 feature 1~2개) | 스냅샷(`review-lib`, `review-begin`, `verify-and-snapshot`), `review-status`, `record-findings`, `logic-candidates`, `pbt-candidates`, `spec-trace`(오류와 결과를 findings로 옮김. 1단계라 차단하지 않음), `review-cleanup`, 리뷰어 2개, 절차 steering | 13장 상위 항목: 메인이 리뷰어를 부를 수 있는지, 리뷰 기록을 읽을 수 있는지, 권한 패턴이 의도대로 막는지 |
 | 시범 2 (1단계 본격) | `record-resolution`, `review-export`, 최종 확인 HTML의 판정 연동 | 판정이 지적마다 빠짐없이 남는지 |
 | 그다음 | GLM-5 비교 리뷰어, `review-approve`, reviewer-eval | 리뷰어 구성을 바꾸거나 2단계로 올리기 전 |
 
@@ -920,7 +925,7 @@ fi
 | `jqwik.tries.default` 키가 1.9.3에서 동작하는지 | `--info`로 돌려 jqwik 리포트의 `tries =` 값 확인 |
 | `.jqwik-database` 위치 | 사내 저장소에서 파일 위치 확인 후 `.gitignore`에 추가 |
 | 무효한 `@Tag` 값의 경고 | 테스트 로그에 태그 경고가 찍히는지 확인. 실행에는 영향 없음 |
-| 이번 feature에서 고친 예전 테스트의 `(AC n.n)` 표시 | 예전 feature의 AC 번호인데 이번 AC로 집계될 수 있음. 1단계 동안 `spec-trace` 결과에서 이런 경우가 있는지 확인 |
+| 이번 feature에서 고친 예전 테스트의 `(AC n.n)` 표시 | 예전 feature의 AC 번호인데 이번 AC로 집계될 수 있음. 1단계 동안 `spec-trace` 결과에서 이런 경우가 있는지 확인하고, 자주 나오면 모든 표시에 `(Feature: <이름>)`을 넣도록 규칙을 올림 |
 | 워크스페이스 권한으로 수락 테스트 쓰기를 막을 수 있는지 | `~/.kiro/workspace-roots/<hash>/permissions.yaml`의 `fs_write` deny가 빌트인 Spec 에이전트에도 적용되는지, 셸 쓰기를 막는 로컬 명령 샌드박스가 사내 버전에 있는지 |
 
 ## 부록. 컴파일 시 소스 재작성과 편집 실패
@@ -950,3 +955,4 @@ fi
 - 2026-11-04: v2. Claude Code 팀의 코드 리뷰 글과 대조하고 사내 Spec 세션 구조를 반영했습니다. 스냅샷 번호 규칙, 수정분 재리뷰와 `carried`, 재현 테스트 기반 수정 검증, `origin`·`fix_scope` 필드, FR-3 재정의(게이트 단계 테스트)와 오류 경로의 FR-2 이동, Spec 세션 역할 분담, 리뷰어 모델 결정(Opus 5.5 기본, GLM-5 비교), 다섯 가지 판정, 최종 확인 HTML 연동과 승인 스냅샷 비교, 리뷰어 회귀 테스트 스킬, 위험도 약속(제안)을 추가했습니다. 스크립트는 `review-lib.sh`로 공통 로직을 모으고 `review-status.sh`, `record-resolution.sh`, `review-approve.sh`, `review-export.mjs`, `eval-setup.sh`, `eval-score.mjs`를 추가했습니다.
 - 2026-11-04: v2 리뷰 반영. 1단계에서 늦게 고칠 때 재리뷰 범위에 다른 태스크 변경이 섞이던 문제를 `fixbase-<n>`(`review-begin.sh <task> --fix`)과 늦은 수정 절차(6.8절)로 고쳤습니다. gate가 실패한 채 smoke test로 넘어가면 리뷰하지 않게 하고, JaCoCo gate에 기준 검사 태스크를 넣도록 바꿨습니다. 리뷰어 회귀 테스트의 패치 규약을 start 상태 기준으로 맞추고 feature 사례에 target을 넘기게 했습니다. GPT-5.6 Sol 배율을 공식 값과 사내 확인값으로 나눠 적고, 장치를 붙이는 순서(8.4절)를 추가했습니다. 그 밖에 승인 비교의 `--index`, findings·판정 입력 검사, 지표 파일 기본 위치, bash 4 검사와 GNU 전용 옵션 제거를 반영했습니다.
 - 2026-11-05: v2.1. AC 추적을 `spec-trace.mjs`로 결정론화하고(4.5절), 사내 스펙 형식(EARS 줄바꿈, `_Requirements:_`, STC 제외, Property Validates, 테스트 `@Tag`)을 읽게 했습니다. 재사용 Property의 `Reuses` 줄, 테스트 AC 표시 규칙, AC 번호 고정 규칙을 추가했습니다. TR-1에 AC 해석 바꾸기와 속성의 오라클 문제를, TR-2에 속성 테스트 약화 패턴과 `pbt-candidates.sh`를 넣고, jqwik 운영 규칙(4.11절: 단계별 tries, 반례의 `@Example` 고정, `.jqwik-database`)을 정했습니다.
+- 2026-11-05: v2.1 리뷰 반영. 취소선 AC를 `철회`로 다루고, 연결된 테스트 중 하나라도 미실행이면 `일부 미실행`으로 내게 했습니다. `spec-trace.mjs`는 예외로 멈춰도 결과 파일을 남기고, feature 리뷰어는 그 오류를 findings로 옮깁니다. `pbt-candidates.sh`에 게이트 단계(`gates` 기준) 절을 넣고 jqwik 파일로 범위를 좁혔습니다. smoke test에도 `-PpbtTries=1000`을 넘기고, trace에서 옮긴 지적은 `source: trace`로 따로 집계하며, feature를 담은 AC 표시(`(Feature: <이름>)`)를 읽게 했습니다.

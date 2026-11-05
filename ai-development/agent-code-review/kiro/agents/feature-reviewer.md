@@ -41,7 +41,8 @@ scripts/review/review-status.sh <target>
 - `ready=no`이면 리뷰하지 말고 `scripts/review/record-findings.sh <target> --blocked`로 `FR-0` blocker 하나만 기록한다. `origin`은 `introduced`, `evidence`에는 review-status 출력의 해당 줄을 쓴다.
 - `start`는 HEAD(feature 시작 전), `gates`는 마지막 개발 태스크가 끝난 시점이다.
 - 기록 파일은 `git rev-parse --git-path review/<target>` 아래에 있고, read 도구로 읽는다.
-- AC 대조 결과는 같은 곳의 `trace-<review_to의 라벨>.json`이다(예: `review_to`가 `.../done-2`면 `trace-done-2.json`). 없으면 리뷰하지 말고 `FR-0` blocker 하나만 `--blocked`로 기록한다. 평가 사례(`eval-`)처럼 대조 결과를 만들지 않는 대상은 이 확인을 건너뛴다.
+- AC 대조 결과는 같은 곳의 `trace-<review_to의 라벨>.json`이다(예: `review_to`가 `.../done-2`면 `trace-done-2.json`). 스크립트는 예외로 멈춰도 파일을 남기므로, 파일이 없다는 것은 대조 단계를 건너뛰었다는 뜻이다. 그때는 리뷰하지 말고 `FR-0` blocker 하나만 `--blocked`로 기록한다. 평가 사례(`eval-`)처럼 대조 결과를 만들지 않는 대상은 이 확인을 건너뛴다.
+- trace에 `crashed: true`나 오류가 있으면 그 오류를 findings로 옮기고(아래 FR-1), 나머지 항목(FR-2~4)은 그대로 본다.
 - 이후 명령과 출력의 `<target>`은 모두 입력받은 값으로 바꾼다.
 
 ```bash
@@ -58,7 +59,8 @@ git show <start>:<path>                                # 원래 있던 코드인
 ## 체크 항목
 
 - **FR-1 AC ↔ 테스트 ↔ 코드 추적.** AC와 테스트의 연결은 `trace-*.json`이 이미 대조했다. 직접 다시 찾지 않는다.
-  - `errors`와 상태가 `unlinked`·`failed`·`not-run`인 AC는 그대로 findings로 옮긴다(`evidence`에 trace의 해당 항목).
+  - `errors`와 상태가 `unlinked`·`failed`·`partial`·`not-run`인 AC는 그대로 findings로 옮기고 `"source": "trace"`를 붙인다(`evidence`에 trace의 해당 항목). 스크립트가 낸 사실이라 리뷰어 판단의 채택률과 따로 집계한다. `withdrawn`(취소선으로 지운 AC)은 옮기지 않는다.
+  - 아래 의미 판단에서 나온 지적에는 `source`를 붙이지 않는다.
   - 연결된 테스트(`properties[].tests`, `acs[].direct_tests`)가 AC 문장의 의미를 실제로 검증하는지 판단한다. 테스트 이름이나 표시가 맞아도 단언이 다른 것을 보면 지적한다.
   - `via: reuse`로 연결된 테스트는 재사용한 속성이 새 AC의 의미까지 덮는지 판단한다. 기존 속성이 다른 입력 범위나 다른 조건만 다루면 지적한다.
   - `unmarked_tests`는 `minor`로 묶어 하나만 적는다.

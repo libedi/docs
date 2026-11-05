@@ -60,9 +60,10 @@ inclusion: always
 2. JaCoCo 태스크: `scripts/review/verify-and-snapshot.sh feature gate test jacocoTestReport jacocoTestCoverageVerification -PpbtTries=1000`
    - 커버리지 기준을 검사하는 태스크를 반드시 포함한다. 리포트만 만드는 태스크는 기준 미달에도 실패하지 않는다.
    - `-PpbtTries=1000`으로 속성 테스트를 게이트 강도로 다시 돌린다.
-3. smoke test 태스크: `scripts/review/verify-and-snapshot.sh feature done build`
+3. smoke test 태스크: `scripts/review/verify-and-snapshot.sh feature done build -PpbtTries=1000`
+   - 게이트와 같은 값을 넘긴다. 값이 다르면 test 태스크의 입력이 바뀌어 전체 테스트가 다시 돌고, AC 대조가 읽는 결과도 200회 실행 결과가 된다.
 4. smoke test 직후 AC 대조: `node scripts/review/spec-trace.mjs --spec <스펙 디렉터리> --record feature`
-   - 결과는 `review/feature/trace-done-<n>.json`에 남는다. exit 1(구조 오류)이면 오류 줄을 그대로 보고한다. 스펙 문서나 테스트 표시를 고칠지는 사람이 정한다.
+   - 결과는 `review/feature/trace-done-<n>.json`에 남는다. 구조 오류나 예외(exit 1)여도 파일은 남는다. 오류 줄을 그대로 보고하고, 스펙 문서나 테스트 표시를 고칠지는 사람이 정한다.
 5. 메인이 `feature-reviewer`에 spec, MODULE_SPEC, SpotBugs XML 경로를 넘긴다.
 6. findings 처리 규칙은 태스크와 같다. 수정이 들어가면 2~4단계를 다시 실행한 뒤 재리뷰한다. FR-4 승격 후보는 MODULE_SPEC에 쓰지 말고 사람에게 목록으로 보고한다.
 
@@ -94,6 +95,7 @@ inclusion: always
 
 - 예시 테스트(`@Test`, `@Example`)는 메서드 javadoc에 검증하는 AC를 적는다: `/** **Validates: Requirements 4.1, 4.4** */`
   - 클래스의 모든 테스트가 같은 AC를 검증할 때만 클래스 javadoc에 적는다.
+  - 이번 feature에서 고치지 않는 기존 테스트를 이번 AC에 연결하거나, 다른 feature의 AC 표시가 있는 파일을 고칠 때는 feature를 붙인다: `**Validates: Requirements 2.3 (Feature: <스펙 디렉터리 이름>)**`
 - 속성 테스트(`*PropertyTest.java`의 `@Property`)는 지금처럼 `@Tag("Feature: <스펙 디렉터리 이름>, Property <N>: <제목>")`를 단다. 스펙 디렉터리 이름은 앞의 인덱스(`01-`)를 뺀 값이다.
 - AC와 직접 연결되지 않는 테스트(헬퍼 검증 등)는 javadoc에 `**No-AC: <이유>**`를 적는다. 표시 없는 테스트로 집계되지 않는다.
 

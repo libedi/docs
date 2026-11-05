@@ -6,7 +6,9 @@
 // out을 생략하면 메인 저장소 git 디렉터리의 review-metrics.jsonl(git rev-parse --git-common-dir)에 쌓는다.
 // 워크트리를 지워도 남는 위치다.
 //
-// 줄 형식: {exported_at, branch, target, round, reviewer, index, check, severity, origin, resolution}
+// 줄 형식: {exported_at, branch, target, round, reviewer, index, check, source, severity, origin, resolution}
+//   source가 "trace"면 spec-trace.mjs가 낸 사실을 리뷰어가 옮긴 지적이다. 리뷰어 판단의 채택률과 섞지 않으려고
+//   집계에서는 "<check>(trace)"로 따로 센다.
 //   reviewer는 태그 없는 기본 리뷰어면 "primary", 비교 리뷰어면 그 태그
 // 집계 (기본 리뷰어 기준)
 //   - 항목(check)별 지적 수와 판정 분포, 채택률 = fixed ÷ 판정된 지적
@@ -49,9 +51,10 @@ for (const target of readdirSync(reviewDir).sort()) {
     findings.forEach((x, index) => {
       const resolution = reviewer === 'primary' ? res.get(`${round}:${index}`) ?? null : null;
       lines.push({ exported_at: now, branch, target, round: Number(round), reviewer, index,
-        check: x.check, severity: x.severity, origin: x.origin ?? null, resolution });
+        check: x.check, source: x.source ?? null, severity: x.severity, origin: x.origin ?? null, resolution });
       if (reviewer !== 'primary') return;
-      const c = (byCheck[x.check] ??= { total: 0, fixed: 0, wrong: 0, intentional: 0, minor: 0, harmful: 0, unresolved: 0 });
+      const key = x.source === 'trace' ? `${x.check}(trace)` : x.check;
+      const c = (byCheck[key] ??= { total: 0, fixed: 0, wrong: 0, intentional: 0, minor: 0, harmful: 0, unresolved: 0 });
       c.total++;
       c[resolution ?? 'unresolved']++;
     });

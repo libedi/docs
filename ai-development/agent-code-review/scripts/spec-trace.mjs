@@ -21,6 +21,7 @@
 // 읽는 형식 (사내 Kiro 스펙 기준)
 //   requirements.md  "### Requirement <N>: 제목" 아래 "#### Acceptance Criteria", 그 아래 줄 맨 앞의 "<n>. "
 //                    (EARS 절마다 줄바꿈한 이어지는 줄은 들여쓰기로 같은 항목에 묶는다) → AC "<N>.<n>"
+//                    본문이 "~~"로 시작하면 취소선으로 지운 AC(withdrawn): 번호는 차지하고 연결은 요구하지 않음
 //   design.md        "### Property <N>: 제목" 절 안의 "**Validates: Requirements 4.1, 4.3**"
 //                    재사용이면 "**Reuses: <테스트 클래스> (Feature: <이름>, Property 4, 11)**" (여럿이면 ;로 구분)
 //   tasks.md         "- [x|-|~| ] <번호>. 제목" 아래 "_Requirements: 1.2, 1.3_" (대소문자 무관),
@@ -28,6 +29,8 @@
 //   테스트           @Tag("Feature: <이름>, Property <N>: …")   → Property 연결 (feature 명시)
 //                    javadoc "**Validates: Requirements 1.3, 1.7**", @DisplayName/@Label "(AC 4.1, 4.4)"
 //                                                              → AC 직접 연결 (--range 안의 파일만)
+//                    javadoc "**Validates: Requirements 1.3 (Feature: <이름>)**"
+//                                                              → feature를 담은 직접 연결 (범위와 무관, 그 feature일 때만)
 //                    javadoc "**No-AC: <이유>**"      → AC와 직접 연결되지 않는 테스트 (표시 없음으로 세지 않음)
 //                    클래스에 붙은 표시는 그 클래스의 모든 테스트 메서드에 적용한다.
 //
@@ -68,6 +71,22 @@ const warnings = [];
 const err = (code, msg, extra = {}) => errors.push({ code, msg, ...extra });
 const warn = (code, msg, extra = {}) => warnings.push({ code, msg, ...extra });
 
+// 기록 위치와 범위는 파싱 전에 정한다. 파서가 낯선 소스에서 예외로 죽어도 결과 파일은 남긴다.
+const ns = 'refs/worktree/review';
+let latestDone = null;
+if (opt.record) {
+  let n = 0;
+  while (true) { try { git('show-ref', '--verify', '-q', `${ns}/${opt.record}/done-${n + 1}`); n++; } catch { break; } }
+  if (n > 0) latestDone = `done-${n}`;
+  if (!opt.from && n > 0) { opt.from = `${ns}/${opt.record}/start`; opt.to = `${ns}/${opt.record}/${latestDone}`; }
+}
+let outPath = opt.json ? resolve(opt.json) : null;
+if (opt.record) {
+  const dir = resolve(top, git('rev-parse', '--git-path', `review/${opt.record}`));
+  mkdirSync(dir, { recursive: true });
+  outPath = join(dir, `trace-${latestDone ?? 'adhoc'}.json`);
+}
+
 // ---------- requirements.md ----------
 function parseRequirements(text) {
   const acs = new Map(); // "N.n" -> {req, title, text}
@@ -92,7 +111,11 @@ function parseRequirements(text) {
       cur = null;
     }
   }
-  for (const a of acs.values()) a.text = a.text.replace(/\s{2,}/g, ' ');
+  for (const a of acs.values()) {
+    a.text = a.text.replace(/\s{2,}/g, ' ');
+    // 취소선으로 지운 AC: 번호는 차지하지만 태스크·테스트 연결을 요구하지 않는다
+    a.withdrawn = a.text.startsWith('~~');
+  }
   // 번호 건너뜀 (AC를 지우고 번호를 당기지 않았는지 사람이 보도록)
   const byReq = {};
   for (const a of acs.values()) (byReq[a.req] ??= []).push(Number(a.id.split('.')[1]));
@@ -136,11 +159,12 @@ function parseDesign(text) {
 function parseTasks(text) {
   const tasks = []; let cur = null;
   for (const line of text.split(/\r?\n/)) {
-    const t = line.match(/^(\s*)- \[(.)\]\s+(\d+(?:\.\d+)*)\.?\s+(.*)$/);
+    const t = line.match(/^(\s*)- \[(.)\](\*?)\s+(\d+(?:\.\d+)*)\.?\s+(.*)$/);
     if (t) {
+      if (t[3]) warn('optional-task-marker', `tasks.md ${t[4]}가 선택 태스크(\`- [ ]*\`)로 표시돼 있습니다. 사내 형식에서는 쓰지 않는 표시라 확인이 필요합니다`);
       const indent = t[1].length;
       const parent = [...tasks].reverse().find((x) => x.indent < indent) ?? null;
-      cur = { id: t[3], status: t[2], title: t[4].trim(), indent, requirements: [], properties: [],
+      cur = { id: t[4], status: t[2], title: t[5].trim(), optional: t[3] === '*', indent, requirements: [], properties: [],
         stcExcluded: parent?.stcExcluded ?? false };
       tasks.push(cur); continue;
     }
@@ -185,10 +209,10 @@ function readAnnotation(s) {
 }
 const strings = (s) => [...s.matchAll(/"((?:\\.|[^"\\])*)"/g)].map((x) => x[1]);
 function markersOf(doc, annos) {
-  const mk = { props: [], acs: [], display: null, noAc: false };
+  const mk = { props: [], acs: [], acFeature: null, display: null, noAc: false };
   if (doc) {
-    const v = doc.match(/Validates:\s*Requirements?\s+([\d.,\s]+)/i);
-    if (v) mk.acs.push(...acList(v[1]));
+    const v = doc.match(/Validates:\s*Requirements?\s+([\d.,\s]+)(?:\(\s*Feature:\s*([^)]+?)\s*\))?/i);
+    if (v) { mk.acs.push(...acList(v[1])); mk.acFeature = v[2]?.trim() ?? null; }
     if (/No-AC:/i.test(doc)) mk.noAc = true;
   }
   for (const a of annos) {
@@ -296,13 +320,20 @@ function resultOf(method, results, haveResults) {
   if (cases.every((c) => c.status === 'skipped')) return 'skipped';
   return 'passed';
 }
-const worst = (statuses) => {
+// 연결된 테스트들의 상태를 하나로 모은다. 하나라도 통과하지 못했으면 통과로 보지 않는다.
+const aggregate = (statuses) => {
   if (statuses.length === 0) return 'none';
-  for (const s of ['failed', 'passed', 'skipped', 'not-run', 'unknown']) if (statuses.includes(s)) return s;
-  return statuses[0];
+  if (statuses.includes('failed')) return 'failed';
+  if (statuses.every((s) => s === 'unknown')) return 'unknown';
+  const passed = statuses.filter((s) => s === 'passed').length;
+  if (passed === statuses.length) return 'passed';
+  if (passed > 0) return 'partial';          // 일부 통과, 일부 미실행·건너뜀
+  if (statuses.includes('not-run')) return 'not-run';
+  return 'skipped';
 };
 
 // ---------- 실행 ----------
+try {
 for (const f of ['requirements.md', 'design.md', 'tasks.md']) {
   if (!existsSync(join(specDir, f))) { err('missing-spec-file', `${f}가 없습니다: ${specDir}`); }
 }
@@ -314,14 +345,7 @@ if (acs.size === 0) err('no-ac-parsed', 'requirements.md에서 AC를 하나도 �
 // AC를 못 읽었으면 AC 참조 오류는 모두 같은 원인의 연쇄라 생략한다
 const acKnown = (a) => acs.size === 0 || acs.has(a);
 
-// 범위 (--record면 <target>/start → 최신 done)
-let latestDone = null;
-if (opt.record) {
-  const ns = 'refs/worktree/review';
-  let n = 0; while (true) { try { git('show-ref', '--verify', '-q', `${ns}/${opt.record}/done-${n + 1}`); n++; } catch { break; } }
-  if (n > 0) latestDone = `done-${n}`;
-  if (!opt.from && n > 0) { opt.from = `${ns}/${opt.record}/start`; opt.to = `${ns}/${opt.record}/${latestDone}`; }
-}
+// 범위 (--record면 <target>/start → 최신 done. 위에서 정함)
 let changedTests = null;
 if (opt.from && opt.to) {
   changedTests = new Set(git('diff', '--name-only', opt.from, opt.to).split('\n').filter((p) => p.includes('/src/test/') && p.endsWith('.java')));
@@ -342,6 +366,7 @@ for (const m of allMethods) {
   m.acs = [...new Set([...m.markers.acs, ...(c?.markers.acs ?? [])])];
   m.display = m.markers.display;
   m.noAc = m.markers.noAc || (c?.markers.noAc ?? false);
+  m.acFeature = m.markers.acs.length ? m.markers.acFeature : (c?.markers.acFeature ?? null);
   m.inRange = changedTests ? changedTests.has(m.file) : true;
 }
 
@@ -376,7 +401,10 @@ for (const m of allMethods) for (const p of m.props) {
 const simpleName = (fqcn) => fqcn.split('.').pop().split('$').pop();
 const propertyRows = [];
 for (const p of props.values()) {
-  for (const a of p.validates) if (!acKnown(a)) err('unknown-ac-in-design', `design.md Property ${p.n}가 없는 AC ${a}를 가리킵니다`);
+  for (const a of p.validates) {
+    if (!acKnown(a)) err('unknown-ac-in-design', `design.md Property ${p.n}가 없는 AC ${a}를 가리킵니다`);
+    else if (acs.get(a)?.withdrawn) warn('withdrawn-ac-referenced', `design.md Property ${p.n}가 취소선으로 지운 AC ${a}를 가리킵니다`);
+  }
   if (p.validates.length === 0) warn('property-without-validates', `design.md Property ${p.n}에 Validates가 없습니다`);
   const own = tagIndex.get(`${feature}#${p.n}`) ?? [];
   const reused = [];
@@ -395,8 +423,8 @@ for (const p of props.values()) {
   }
   if (own.length === 0 && p.reuses.length === 0) warn('property-untested', `Property ${p.n}에 연결된 테스트가 없습니다 (@Tag "Feature: ${feature}, Property ${p.n}" 또는 Reuses 필요)`);
   const linked = [...own, ...reused];
-  const status = worst(linked.map((m) => m.result));
-  if (['failed', 'not-run', 'skipped'].includes(status)) warn(`property-${status}`, `Property ${p.n}의 테스트 상태: ${status}`);
+  const status = aggregate(linked.map((m) => m.result));
+  if (['failed', 'partial', 'not-run', 'skipped'].includes(status)) warn(`property-${status}`, `Property ${p.n}의 테스트 상태: ${status}`);
   if (p.reuses.length) warn('reuse-needs-review', `Property ${p.n}는 기존 테스트를 재사용합니다. 재사용한 속성이 AC ${p.validates.join(', ')}의 의미까지 덮는지는 리뷰어가 판단합니다`);
   propertyRows.push({ property: p.n, title: p.title, validates: p.validates, reuses: p.reuses,
     tests: linked.map((m) => ({ test: `${m.cls}#${m.name}`, file: m.file, result: m.result, via: own.includes(m) ? 'tag' : 'reuse' })), status });
@@ -412,6 +440,7 @@ const acInTasks = new Map();
 for (const t of tasks) {
   for (const a of t.requirements) {
     if (!acKnown(a)) err('unknown-ac-in-tasks', `tasks.md ${t.id}가 없는 AC ${a}를 가리킵니다`);
+    else if (acs.get(a)?.withdrawn) warn('withdrawn-ac-referenced', `tasks.md ${t.id}가 취소선으로 지운 AC ${a}를 가리킵니다`);
     if (!acInTasks.has(a)) acInTasks.set(a, []);
     acInTasks.get(a).push(t);
   }
@@ -428,15 +457,23 @@ for (const t of tasks) {
 const acRows = [];
 for (const a of acs.values()) {
   const viaProps = propertyRows.filter((r) => r.validates.includes(a.id));
-  const direct = allMethods.filter((m) => m.inRange && m.acs.includes(a.id));
+  // AC 번호만 있는 표시는 이번 변경 파일에서만, feature를 담은 표시는 그 feature일 때만 인정
+  const direct = allMethods.filter((m) => m.acs.includes(a.id) && (m.acFeature ? m.acFeature === feature : m.inRange));
   const ts = acInTasks.get(a.id) ?? [];
+  if (a.withdrawn) {
+    if (direct.length) warn('withdrawn-ac-referenced', `취소선으로 지운 AC ${a.id}를 테스트 ${direct.length}개가 가리킵니다`);
+    acRows.push({ ac: a.id, requirement: a.req, text: a.text, tasks: ts.map((t) => t.id), withdrawn: true, stc_excluded: false,
+      properties: viaProps.map((r) => r.property),
+      direct_tests: direct.map((m) => ({ test: `${m.cls}#${m.name}`, file: m.file, result: m.result })), status: 'withdrawn' });
+    continue;
+  }
   if (ts.length === 0) err('ac-not-in-tasks', `AC ${a.id}를 가리키는 태스크가 없습니다`);
   const exempt = ts.length > 0 && ts.every((t) => t.stcExcluded);
   const statuses = [...viaProps.flatMap((r) => r.tests.map((x) => x.result)), ...direct.map((m) => m.result)];
-  let status = worst(statuses);
+  let status = aggregate(statuses);
   if (status === 'none') status = exempt ? 'exempt' : 'unlinked';
   if (status === 'unlinked') warn('ac-unlinked', `AC ${a.id}에 연결된 테스트가 없습니다 (Property Validates, 또는 이번 변경 테스트의 AC 표시)`);
-  else if (['failed', 'not-run', 'skipped'].includes(status)) warn(`ac-${status}`, `AC ${a.id}에 연결된 테스트 상태: ${status}`);
+  else if (['failed', 'partial', 'not-run', 'skipped'].includes(status)) warn(`ac-${status}`, `AC ${a.id}에 연결된 테스트 상태: ${status}`);
   acRows.push({ ac: a.id, requirement: a.req, text: a.text, tasks: ts.map((t) => t.id), stc_excluded: exempt,
     properties: viaProps.map((r) => r.property),
     direct_tests: direct.map((m) => ({ test: `${m.cls}#${m.name}`, file: m.file, result: m.result })), status });
@@ -456,6 +493,8 @@ const report = {
   summary: {
     acs: acRows.length,
     verified: acRows.filter((r) => r.status === 'passed').length,
+    partial: acRows.filter((r) => r.status === 'partial').length,
+    withdrawn: acRows.filter((r) => r.status === 'withdrawn').length,
     exempt: acRows.filter((r) => r.status === 'exempt').length,
     unlinked: acRows.filter((r) => r.status === 'unlinked').length,
     failed: acRows.filter((r) => r.status === 'failed').length,
@@ -467,7 +506,7 @@ const report = {
   errors, warnings, acs: acRows, properties: propertyRows, unmarked_tests: unmarked,
 };
 
-const icon = { passed: '통과', failed: '실패', 'not-run': '미실행', skipped: '건너뜀', unknown: '결과 없음', unlinked: '연결 없음', exempt: 'STC 제외' };
+const icon = { passed: '통과', failed: '실패', partial: '일부 미실행', 'not-run': '미실행', skipped: '건너뜀', unknown: '결과 없음', unlinked: '연결 없음', exempt: 'STC 제외', withdrawn: '철회' };
 console.log(`feature=${feature}  AC ${report.summary.acs}개, Property ${report.summary.properties}개, 테스트 메서드 ${allMethods.length}개, 결과 파일 ${xmlFiles.length}개`);
 for (const r of acRows) {
   const via = [...r.properties.map((p) => `P${p}`), ...(r.direct_tests.length ? [`직접 ${r.direct_tests.length}`] : [])].join(', ');
@@ -477,13 +516,17 @@ if (unmarked?.length) { console.log('표시 없는 테스트 (이번 변경):');
 for (const e of errors) console.log(`오류 [${e.code}] ${e.msg}`);
 for (const w of warnings) console.log(`경고 [${w.code}] ${w.msg}`);
 
-let out = opt.json;
-if (opt.record) {
-  const dir = resolve(top, git('rev-parse', '--git-path', `review/${opt.record}`));
-  mkdirSync(dir, { recursive: true });
-  out = join(dir, `trace-${latestDone ?? 'adhoc'}.json`);
-}
-if (out) { writeFileSync(out, JSON.stringify(report, null, 2)); console.log(`기록: ${relative(top, out) || out}`); }
+if (outPath) { writeFileSync(outPath, JSON.stringify(report, null, 2)); console.log(`기록: ${relative(top, outPath) || outPath}`); }
 
-const strictFail = opt.strict && warnings.some((w) => /^(ac-unlinked|ac-failed|ac-not-run|property-untested|property-failed|property-not-run)$/.test(w.code));
+const strictFail = opt.strict && warnings.some((w) => /^(ac-unlinked|ac-failed|ac-partial|ac-not-run|property-untested|property-failed|property-partial|property-not-run)$/.test(w.code));
 process.exit(errors.length || strictFail ? 1 : 0);
+} catch (e) {
+  // 예외로 멈춰도 결과 파일을 남긴다. 리뷰어는 이 오류를 findings로 옮기고 나머지 항목(FR-2~4)은 계속 본다.
+  const crash = { code: 'crash', msg: `spec-trace가 예외로 멈췄습니다: ${e?.message ?? e}`, at: String(e?.stack ?? '').split('\n')[1]?.trim() ?? '' };
+  const report = { at: new Date().toISOString(), feature, spec: relative(top, specDir) || '.', crashed: true,
+    summary: { errors: errors.length + 1, warnings: warnings.length }, errors: [...errors, crash], warnings,
+    acs: [], properties: [], unmarked_tests: null };
+  console.log(`오류 [crash] ${crash.msg} (${crash.at})`);
+  if (outPath) { writeFileSync(outPath, JSON.stringify(report, null, 2)); console.log(`기록: ${relative(top, outPath) || outPath}`); }
+  process.exit(1);
+}

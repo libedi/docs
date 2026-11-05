@@ -6,6 +6,7 @@
 #
 # 범위는 review-status.sh와 같다 (이번 회차의 review_from → review_to, 그 안의 red).
 #   1) red 이후 테스트 변경 (TR-2 후보): 각 red → review_to 사이에서 아래 패턴이 들어오거나 빠지거나 바뀐 줄
+#   1') 게이트 단계 테스트 변경 (FR-3 후보): feature 1회차는 범위 안에 red가 없으므로 gates → review_to를 같은 방식으로 본다
 #   2) 이번 범위에 새로 들어온 약화 설정 (TR-1 후보): review_from → review_to 사이에 추가된 줄 중
 #      설정·가정·필터만 (생성 범위는 새 테스트라면 당연히 있으므로 1)에서 바뀐 경우만 본다)
 #   3) 테스트 설정 파일 변경: build.gradle(.kts), junit-platform.properties, jqwik.properties
@@ -13,6 +14,7 @@
 # 패턴: tries, seed, edgeCases, maxDiscardRatio, shrinking, generation, afterFailure,
 #       Assume / assumeThat, .filter(, 생성 범위(between, lessOrEqual, greaterOrEqual, ofMinLength,
 #       ofMaxLength, ofSize, ofMinSize, ofMaxSize, withMaxDepth, numeric 범위 어노테이션), @Disabled
+# @Disabled를 뺀 패턴은 net.jqwik를 import하는 파일에서만 본다 (스트림 .filter( 같은 노이즈를 줄임)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=review-lib.sh
@@ -27,6 +29,8 @@ status=$("$here/review-status.sh" "$target")
 from=$(sed -n 's/^review_from=//p' <<< "$status")
 to=$(sed -n 's/^review_to=//p' <<< "$status")
 reds=$(sed -n 's/^reds=//p' <<< "$status")
+gates=$(sed -n 's/^gates=//p' <<< "$status")
+round=$(sed -n 's/^round=//p' <<< "$status")
 [[ -n $from && -n $to ]] || { echo "리뷰 범위가 없습니다: $target (done 스냅샷 필요)" >&2; exit 2; }
 
 pat='tries[[:space:]]*=|seed[[:space:]]*=|edgeCases[[:space:]]*=|maxDiscardRatio|shrinking[[:space:]]*=|generation[[:space:]]*=|afterFailure[[:space:]]*=|Assume[.]|assumeThat|[.]filter[(]|between[(]|lessOrEqual[(]|greaterOrEqual[(]|ofMinLength[(]|ofMaxLength[(]|ofSize[(]|ofMinSize[(]|ofMaxSize[(]|withMaxDepth[(]|@(IntRange|LongRange|ShortRange|ByteRange|DoubleRange|FloatRange|BigRange|CharRange|StringLength|Size|NotEmpty|Positive|Negative)\b|@Disabled'
@@ -39,8 +43,13 @@ scan() {
   local mode=$1; shift   # all: +/- 모두 (전체 패턴), added: + 만 (설정·가정·필터 패턴)
   local p=$pat
   [[ $mode == added ]] && p=$pat_added
+  # 두 시점 중 어느 쪽에서든 jqwik을 import하는 파일
+  local jq
+  jq=$(git grep -l 'net[.]jqwik' "$@" -- "$glob" 2> /dev/null | sed 's/^[^:]*://' | sort -u | tr '\n' ' ')
   git diff --unified=0 "$@" -- "$glob" |
-    awk -v pat="$p" -v mode="$mode" '
+    awk -v pat="$p" -v mode="$mode" -v jqfiles="$jq" '
+      BEGIN { cnt = split(jqfiles, arr, " "); for (i = 1; i <= cnt; i++) isjq[arr[i]] = 1 }
+      function hit(code, f) { return code ~ pat && (code ~ /@Disabled/ || (f in isjq)) }
       /^--- a\// { old = substr($0, 7); next }
       /^\+\+\+ b\// { file = substr($0, 7); next }
       /^\+\+\+ \/dev\/null/ { file = old; next }
@@ -49,8 +58,8 @@ scan() {
         split($3, n, ","); nl = substr(n[1], 2)
         next
       }
-      /^-/ { code = substr($0, 2); if (mode == "all" && code ~ pat) print old ":" ol ": [-] " code; ol++; next }
-      /^\+/ { code = substr($0, 2); if (code ~ pat) print file ":" nl ": [+] " code; nl++; next }
+      /^-/ { code = substr($0, 2); if (mode == "all" && hit(code, old)) print old ":" ol ": [-] " code; ol++; next }
+      /^\+/ { code = substr($0, 2); if (hit(code, file)) print file ":" nl ": [+] " code; nl++; next }
     '
 }
 
@@ -66,6 +75,12 @@ else
     out=$(scan all "$red" "$to")
     if [[ -n $out ]]; then echo "### ${red##*/} -> ${to##*/}"; echo "$out"; found=1; fi
   done
+fi
+
+if [[ -n $gates && $round == 1 ]]; then
+  echo "## 게이트 단계 테스트 변경 (FR-3 후보)"
+  out=$(scan all "$gates" "$to")
+  if [[ -n $out ]]; then echo "### gates -> ${to##*/}"; echo "$out"; found=1; else echo "(없음)"; fi
 fi
 
 echo "## 이번 범위에 새로 들어온 약화 설정 (TR-1 후보)"
