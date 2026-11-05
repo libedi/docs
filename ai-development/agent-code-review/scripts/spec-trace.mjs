@@ -209,10 +209,11 @@ function readAnnotation(s) {
 }
 const strings = (s) => [...s.matchAll(/"((?:\\.|[^"\\])*)"/g)].map((x) => x[1]);
 function markersOf(doc, annos) {
-  const mk = { props: [], acs: [], acFeature: null, display: null, noAc: false };
+  // acs는 {ac, feature} 쌍. feature가 없는 표시는 feature: null (이번 변경 파일에서만 인정)
+  const mk = { props: [], acs: [], display: null, noAc: false };
   if (doc) {
     const v = doc.match(/Validates:\s*Requirements?\s+([\d.,\s]+)(?:\(\s*Feature:\s*([^)]+?)\s*\))?/i);
-    if (v) { mk.acs.push(...acList(v[1])); mk.acFeature = v[2]?.trim() ?? null; }
+    if (v) { const f = v[2]?.trim() ?? null; mk.acs.push(...acList(v[1]).map((ac) => ({ ac, feature: f }))); }
     if (/No-AC:/i.test(doc)) mk.noAc = true;
   }
   for (const a of annos) {
@@ -225,7 +226,7 @@ function markersOf(doc, annos) {
     if (a.name === 'DisplayName' || a.name === 'Label') {
       const s = strings(a.args)[0] ?? '';
       mk.display = s;
-      for (const m of s.matchAll(/\bAC[-\s]*(\d+\.\d+(?:\s*[,/]\s*(?:AC[-\s]*)?\d+\.\d+)*)/g)) mk.acs.push(...acList(m[1]));
+      for (const m of s.matchAll(/\bAC[-\s]*(\d+\.\d+(?:\s*[,/]\s*(?:AC[-\s]*)?\d+\.\d+)*)/g)) mk.acs.push(...acList(m[1]).map((ac) => ({ ac, feature: null })));
     }
   }
   return mk;
@@ -363,10 +364,13 @@ const classByFqcn = new Map(allClasses.map((c) => [c.fqcn, c]));
 for (const m of allMethods) {
   const c = classByFqcn.get(m.cls);
   m.props = [...m.markers.props, ...(c?.markers.props ?? [])];
-  m.acs = [...new Set([...m.markers.acs, ...(c?.markers.acs ?? [])])];
+  // 메서드 표시와 클래스 표시를 쌍 그대로 합친다 (각 표시의 feature 정보를 유지)
+  const seen = new Set();
+  m.acs = [...m.markers.acs, ...(c?.markers.acs ?? [])].filter((x) => {
+    const k = `${x.ac}|${x.feature ?? ''}`; if (seen.has(k)) return false; seen.add(k); return true;
+  });
   m.display = m.markers.display;
   m.noAc = m.markers.noAc || (c?.markers.noAc ?? false);
-  m.acFeature = m.markers.acs.length ? m.markers.acFeature : (c?.markers.acFeature ?? null);
   m.inRange = changedTests ? changedTests.has(m.file) : true;
 }
 
@@ -458,7 +462,7 @@ const acRows = [];
 for (const a of acs.values()) {
   const viaProps = propertyRows.filter((r) => r.validates.includes(a.id));
   // AC 번호만 있는 표시는 이번 변경 파일에서만, feature를 담은 표시는 그 feature일 때만 인정
-  const direct = allMethods.filter((m) => m.acs.includes(a.id) && (m.acFeature ? m.acFeature === feature : m.inRange));
+  const direct = allMethods.filter((m) => m.acs.some((x) => x.ac === a.id && (x.feature ? x.feature === feature : m.inRange)));
   const ts = acInTasks.get(a.id) ?? [];
   if (a.withdrawn) {
     if (direct.length) warn('withdrawn-ac-referenced', `취소선으로 지운 AC ${a.id}를 테스트 ${direct.length}개가 가리킵니다`);
