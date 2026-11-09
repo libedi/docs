@@ -48,7 +48,7 @@ function Get-Paged {
         if ($result.Count -lt 100) { break }
         $page++
     }
-    return ,($all.ToArray())
+    return $all.ToArray()
 }
 
 function Get-Discussion {
