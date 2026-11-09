@@ -137,6 +137,22 @@ PowerShell 5.1에서 주의한 점:
 - `Invoke-RestMethod`·`ConvertFrom-Json`은 JSON 배열을 열거하지 않고 객체 하나로 내보낸다. `@(...)`로 감싸면 페이지 배열이 원소 하나로 들어갈 수 있으므로, 변수에 대입한 뒤 파이프로 열거한다.
 - 오류는 `[Console]::Error`로 출력하고 종료 코드 1을 반환한다(`ErrorActionPreference=Stop`에서 `Write-Error`를 쓰면 `exit 1`에 도달하지 않음).
 
+### Git Bash에서 jq 권장 설치 (선택 사항)
+
+사내 Windows VDI에서는 npm이 Nexus의 npm Registry 프록시를 사용하므로, Git Bash에서 jq 호환 CLI를 전역 설치할 수 있다. Node.js 24.22.1 환경에서 기본 JSON 파싱과 리뷰 필터 테스트를 통과한 방식이다.
+
+```bash
+npm config get registry              # 사내 Nexus 주소인지 확인
+npm install -g @shukelabs/jq         # 전역 설치 (Git Bash용 jq 명령 제공)
+jq --version
+echo '{"name":"test"}' | jq -r '.name'
+```
+
+- `jq` 설치는 **권장**이지 필수가 아니다. PowerShell 5.1은 자체 JSON 파서를 사용하므로 별도 설치가 필요 없다.
+- 전역 npm 설치는 프로젝트의 `package.json`을 변경하지 않는다. 팀 배포 시에는 실제 검증된 패키지 버전을 확인하여 버전을 고정하는 것이 좋다.
+- 이 패키지는 공식 jq 바이너리 자체가 아닌 npm 배포용 호환 CLI이므로, 사내 보안 정책과 npm 패키지 출처를 확인한다.
+- 폐쇄망 VDI의 Windows curl(Schannel)에서는 인증서 해지 서버에 접근하지 못할 수 있다. `--ssl-revoke-best-effort`로 API 조회가 성공한 것을 확인했고, **Git Bash 스크립트의 모든 curl 요청(GET/POST)에 이 옵션을 직접 적용했다.** 별도 환경변수는 필요 없다. 이는 `--insecure`와 달리 인증서 검증 전체를 끄지 않지만, 오프라인 해지 확인 실패를 허용하므로 사내 보안 정책을 따른다.
+
 ### Git Bash
 
 ```bash
