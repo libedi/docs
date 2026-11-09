@@ -105,10 +105,10 @@
 
 ## 4. 포함된 실행 스크립트
 
-제안서와 분리된 `ai-development/scripts/gitlab-mr-review/` 전용 디렉터리의 실행 파일:
+제안서와 분리된 `ai-development/gitlab-mr-review/scripts/` 전용 디렉터리의 실행 파일:
 
-- [gitlab-mr-review.ps1](scripts/gitlab-mr-review/gitlab-mr-review.ps1) — Windows PowerShell 5.1, `Invoke-WebRequest` + UTF-8 직접 디코딩, JSON 내장 변환.
-- [gitlab-mr-review.sh](scripts/gitlab-mr-review/gitlab-mr-review.sh) — Git Bash, `curl` + 선택적 `jq`.
+- [gitlab-mr-review.ps1](gitlab-mr-review/scripts/gitlab-mr-review.ps1) — Windows PowerShell 5.1, `Invoke-WebRequest` + UTF-8 직접 디코딩, JSON 내장 변환.
+- [gitlab-mr-review.sh](gitlab-mr-review/scripts/gitlab-mr-review.sh) — Git Bash, `curl` + 선택적 `jq`.
 
 두 파일 모두 `reviewers`, `list`, `reply`를 제공하며 MR을 자동 검색하지 않는다. 기존 스킬이 구한 **숫자 프로젝트 ID**와 MR IID를 전달한다. 출력은 PowerShell이 JSON 배열 하나, Git Bash(jq)가 항목별 한 줄 JSON(JSONL)이다.
 
@@ -121,12 +121,12 @@
 
 ```powershell
 $env:GITLAB_URL = 'https://gitlab.example.com'   # 이미 설정되어 있으면 생략
-.\scripts\gitlab-mr-review\gitlab-mr-review.ps1 -Action reviewers -ProjectId 123 -MrIid 45
-.\scripts\gitlab-mr-review\gitlab-mr-review.ps1 -Action list -ProjectId 123 -MrIid 45
+.\gitlab-mr-review\scripts\gitlab-mr-review.ps1 -Action reviewers -ProjectId 123 -MrIid 45
+.\gitlab-mr-review\scripts\gitlab-mr-review.ps1 -Action list -ProjectId 123 -MrIid 45
 # dry-run (확인 플래그 없음)
-.\scripts\gitlab-mr-review\gitlab-mr-review.ps1 -Action reply -ProjectId 123 -MrIid 45 -DiscussionId '<discussion-id>' -CommitSha '<commit-sha>' -LastSeenNoteId <note-id> -BodyFile .\reply.txt
+.\gitlab-mr-review\scripts\gitlab-mr-review.ps1 -Action reply -ProjectId 123 -MrIid 45 -DiscussionId '<discussion-id>' -CommitSha '<commit-sha>' -LastSeenNoteId <note-id> -BodyFile .\reply.txt
 # 사용자 승인 후 게시
-.\scripts\gitlab-mr-review\gitlab-mr-review.ps1 -Action reply -ProjectId 123 -MrIid 45 -DiscussionId '<discussion-id>' -CommitSha '<commit-sha>' -LastSeenNoteId <note-id> -BodyFile .\reply.txt -ConfirmPost
+.\gitlab-mr-review\scripts\gitlab-mr-review.ps1 -Action reply -ProjectId 123 -MrIid 45 -DiscussionId '<discussion-id>' -CommitSha '<commit-sha>' -LastSeenNoteId <note-id> -BodyFile .\reply.txt -ConfirmPost
 ```
 
 `<note-id>`는 해당 스레드에 대해 `list`에서 읽은 노트 중 가장 큰 ID다.
@@ -157,12 +157,12 @@ echo '{"name":"test"}' | jq -r '.name'
 
 ```bash
 export GITLAB_URL='https://gitlab.example.com'   # 이미 설정되어 있으면 생략
-bash scripts/gitlab-mr-review/gitlab-mr-review.sh reviewers 123 45
-bash scripts/gitlab-mr-review/gitlab-mr-review.sh list 123 45
+bash gitlab-mr-review/scripts/gitlab-mr-review.sh reviewers 123 45
+bash gitlab-mr-review/scripts/gitlab-mr-review.sh list 123 45
 # dry-run (확인 플래그 없음)
-bash scripts/gitlab-mr-review/gitlab-mr-review.sh reply 123 45 '<discussion-id>' '<commit-sha>' ./reply.txt --last-seen-note-id <note-id>
+bash gitlab-mr-review/scripts/gitlab-mr-review.sh reply 123 45 '<discussion-id>' '<commit-sha>' ./reply.txt --last-seen-note-id <note-id>
 # 사용자 승인 후 게시
-bash scripts/gitlab-mr-review/gitlab-mr-review.sh reply 123 45 '<discussion-id>' '<commit-sha>' ./reply.txt --last-seen-note-id <note-id> --confirm-post
+bash gitlab-mr-review/scripts/gitlab-mr-review.sh reply 123 45 '<discussion-id>' '<commit-sha>' ./reply.txt --last-seen-note-id <note-id> --confirm-post
 ```
 
 Git Bash에서 `jq`가 있으면 `list`는 가공한 각 Discussion을 **한 줄 JSON(JSONL)** 으로 출력한다. 없으면 페이지별 JSON 배열을 각각 한 줄로 출력한다 (원본 응답, 토큰 비용 증가). 양쪽 모두 페이지를 모두 조회한다. `X-Next-Page` 헤더가 아예 없으면(프록시가 제거한 경우 등) jq가 있을 때는 가득 찬 페이지에서 실패(종료 코드 1)하고, 없을 때는 항목 수를 셀 수 없으므로 원본 페이지를 출력한 뒤 종료 코드 3으로 끝난다. 이때 에이전트는 원본 페이지의 항목 수를 직접 세어 100건 미만일 때만 완전한 결과로 본다.
