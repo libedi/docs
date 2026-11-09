@@ -2,11 +2,16 @@
 # GitLab MR reviewer/discussion helper for Git Bash (Windows).
 # Token: NOVA_TOKEN (Windows user-level environment variable, inherited by Git Bash).
 # Usage: gitlab-mr-review.sh reviewers|list PROJECT_ID MR_IID
-#        gitlab-mr-review.sh reply PROJECT_ID MR_IID DISCUSSION_ID COMMIT_SHA UTF8_BODY_FILE [--confirm-post] [--ack-unverified]
+#        gitlab-mr-review.sh reply PROJECT_ID MR_IID DISCUSSION_ID COMMIT_SHA UTF8_BODY_FILE \
+#          --last-seen-note-id NOTE_ID [--confirm-post] [--ack-unverified]
+#   NOTE_ID: largest non-system note ID of the discussion as read from 'list'.
+# Exit codes: 0 success or dry run, 1 API/validation failure or refused reply,
+#             2 usage/configuration error, 3 pagination unverified (no jq and no
+#             X-Next-Page header; the raw page was already printed).
 set -euo pipefail
 
 usage() {
-  printf 'Usage:\n  %s reviewers|list PROJECT_ID MR_IID\n  %s reply PROJECT_ID MR_IID DISCUSSION_ID COMMIT_SHA BODY_FILE [--confirm-post] [--ack-unverified]\n' "$0" "$0" >&2
+  printf 'Usage:\n  %s reviewers|list PROJECT_ID MR_IID\n  %s reply PROJECT_ID MR_IID DISCUSSION_ID COMMIT_SHA BODY_FILE --last-seen-note-id NOTE_ID [--confirm-post] [--ack-unverified]\n' "$0" "$0" >&2
   exit 2
 }
 (( $# >= 3 )) || usage
@@ -27,7 +32,8 @@ api_get() {
 
 # Pages are followed via X-Next-Page (empty on the last page). If the header is
 # missing altogether (e.g. stripped by a proxy), a full page may mean truncation:
-# with jq the item count is checked and a full page fails; without jq it warns.
+# with jq the item count is checked and a full page fails (exit 1); without jq
+# completeness cannot be checked, so it exits 3 instead of reporting success.
 get_all() {
   local endpoint=$1 page=1 url headers body next count
   while :; do
@@ -69,7 +75,8 @@ get_all() {
     rm -f "$headers" "$body"
     if [[ $next == missing ]]; then
       if [[ -z $count ]]; then
-        echo "WARNING: X-Next-Page header missing on page $page; pagination unverified without jq. If this page has $page_size items, results may be truncated." >&2
+        echo "X-Next-Page header missing on page $page and jq is unavailable; completeness unverified (exit 3). Count the items in the raw page: fewer than $page_size means it is complete." >&2
+        exit 3
       elif (( count >= page_size )); then
         echo 'X-Next-Page header missing on a full page; refusing a possibly truncated result.' >&2
         exit 1
@@ -92,17 +99,21 @@ case $action in
     (( $# >= 3 )) || usage
     id=$1; sha=$2; filename=$3; shift 3
     [[ -n $id && -f $filename && -r $filename && -s $filename ]] || { echo 'Valid discussion ID and nonempty UTF-8 body file required.' >&2; exit 2; }
-    confirm=0; ack=0
-    for flag in "$@"; do
-      case $flag in
+    confirm=0; ack=0; last_seen=''
+    while (( $# > 0 )); do
+      case $1 in
         --confirm-post) confirm=1 ;;
         --ack-unverified) ack=1 ;;
+        --last-seen-note-id) (( $# >= 2 )) || usage; last_seen=$2; shift ;;
+        --last-seen-note-id=*) last_seen=${1#*=} ;;
         *) usage ;;
       esac
+      shift
     done
     # Slash/control characters are not valid Discussion ID path components.
     [[ $id =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid discussion ID.' >&2; exit 2; }
     [[ $sha =~ ^[0-9a-fA-F]{7,40}$ ]] || { echo 'COMMIT_SHA must be 7-40 hex characters.' >&2; exit 2; }
+    [[ $last_seen =~ ^[1-9][0-9]*$ ]] || { echo '--last-seen-note-id (largest non-system note ID read from list) is required.' >&2; exit 2; }
     grep -q '[^[:space:]]' "$filename" || { echo 'Reply cannot be whitespace-only.' >&2; exit 2; }
     grep -qiF -- "$sha" "$filename" || { echo 'Body file must mention COMMIT_SHA so the reply points to the pushed fix.' >&2; exit 2; }
     discussion=$(api_get "$base/discussions/$id") || exit 1
@@ -115,6 +126,12 @@ case $action in
       if jq -e --arg sha "$sha" 'any(.notes[]?; (.body // "") | ascii_downcase | contains($sha | ascii_downcase))' <<< "$discussion" >/dev/null; then
         echo 'A note mentioning this commit already exists in the discussion; refusing duplicate.' >&2; exit 1
       fi
+      # New review notes since the agent read the thread must be re-reviewed before replying.
+      # System notes are ignored: pushing a fix adds "changed this line in version N" system notes.
+      new_count=$(jq --argjson last "$last_seen" '[.notes[]? | select(.system != true and .id > $last)] | length' <<< "$discussion")
+      if (( new_count > 0 )); then
+        echo "Discussion has $new_count new note(s) after note $last_seen; reply refused. Re-review the thread first." >&2; exit 1
+      fi
     else
       # A SHA needs no JSON unescaping, so the duplicate check works without jq. It matches the
       # raw JSON anywhere, so it can only over-refuse, never miss.
@@ -122,11 +139,11 @@ case $action in
         echo 'This commit SHA already appears in the discussion; refusing duplicate.' >&2; exit 1
       fi
       if (( ! ack )); then
-        echo 'jq not found. Check manually that the discussion is an open resolvable thread, then retry with --ack-unverified.' >&2
+        echo "jq not found. Check manually that the discussion is an open resolvable thread with no new non-system notes after note $last_seen, then retry with --ack-unverified." >&2
         exit 1
       fi
       # This is intentionally not silent: caller explicitly owns manual validation.
-      echo 'WARNING: posting without automatic open/resolvable verification.' >&2
+      echo 'WARNING: posting without automatic open/resolvable and new-note verification.' >&2
     fi
     if (( ! confirm )); then
       printf 'DRY RUN: reply to discussion %s for commit %s (nothing posted).\n' "$id" "$sha"

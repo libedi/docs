@@ -7,12 +7,14 @@
   The token is read from the NOVA_TOKEN environment variable (Windows user level).
   GET responses are decoded as UTF-8 explicitly: Windows PowerShell 5.1 decodes
   responses without a charset as ISO-8859-1, which garbles Korean review text.
-  Reply requires -CommitSha (idempotency key), a UTF-8 body file that mentions
-  that SHA, and -ConfirmPost. Without -ConfirmPost it only prints a dry run.
+  Reply requires -CommitSha (idempotency key), -LastSeenNoteId (the largest
+  non-system note ID read from 'list' for that discussion), a UTF-8 body file
+  that mentions the SHA, and -ConfirmPost. Without -ConfirmPost it only prints a dry run.
+  Exit codes: 0 success or dry run, 1 API/validation failure or refused reply, 2 configuration error.
 .EXAMPLE
   .\gitlab-mr-review.ps1 -Action list -ProjectId 123 -MrIid 45
 .EXAMPLE
-  .\gitlab-mr-review.ps1 -Action reply -ProjectId 123 -MrIid 45 -DiscussionId abc -CommitSha 3f2c1a9 -BodyFile .\reply.txt -ConfirmPost
+  .\gitlab-mr-review.ps1 -Action reply -ProjectId 123 -MrIid 45 -DiscussionId abc -CommitSha 3f2c1a9 -LastSeenNoteId 1108 -BodyFile .\reply.txt -ConfirmPost
 #>
 [CmdletBinding()]
 param(
@@ -27,6 +29,7 @@ param(
     [int]$MrIid,
     [string]$DiscussionId,
     [string]$CommitSha,
+    [long]$LastSeenNoteId = 0,
     [string]$BodyFile,
     [switch]$ConfirmPost
 )
@@ -166,6 +169,7 @@ try {
     elseif ($Action -eq 'reply') {
         if ([string]::IsNullOrWhiteSpace($DiscussionId)) { throw 'DiscussionId is required for reply.' }
         if ($CommitSha -notmatch '^[0-9a-fA-F]{7,40}$') { throw 'CommitSha (7-40 hex characters) is required for reply.' }
+        if ($LastSeenNoteId -le 0) { throw 'LastSeenNoteId (largest non-system note ID read from list) is required for reply.' }
         if ([string]::IsNullOrWhiteSpace($BodyFile) -or -not (Test-Path -LiteralPath $BodyFile -PathType Leaf)) {
             throw 'A readable BodyFile is required for reply.'
         }
@@ -181,8 +185,14 @@ try {
         if (@($discussion.notes | Where-Object { Test-MentionsSha $_.body $CommitSha }).Count -gt 0) {
             throw 'A note mentioning this commit already exists in the discussion. Refusing duplicate.'
         }
+        # New review notes since the agent read the thread must be re-reviewed before replying.
+        # System notes are ignored: pushing a fix adds "changed this line in version N" system notes.
+        $newNotes = @($discussion.notes | Where-Object { $_.system -ne $true -and [long]$_.id -gt $LastSeenNoteId })
+        if ($newNotes.Count -gt 0) {
+            throw "Discussion has $($newNotes.Count) new note(s) after note $LastSeenNoteId. Refusing reply; re-review the thread first."
+        }
         if (-not $ConfirmPost) {
-            [pscustomobject]@{ dry_run = $true; discussion_id = $DiscussionId; commit_sha = $CommitSha; body = $body } |
+            [pscustomobject]@{ dry_run = $true; discussion_id = $DiscussionId; commit_sha = $CommitSha; last_seen_note_id = $LastSeenNoteId; body = $body } |
                 ConvertTo-Json -Depth 5 -Compress | Write-Output
             exit 0
         }
