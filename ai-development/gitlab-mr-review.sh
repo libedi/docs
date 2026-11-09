@@ -27,7 +27,7 @@ if command -v jq >/dev/null 2>&1; then has_jq=1; fi
 
 # Avoid echoing token or HTTP error bodies. Curl exits non-zero on 4xx/5xx.
 api_get() {
-  curl --fail --silent --show-error --header "PRIVATE-TOKEN: $NOVA_TOKEN" "$1"
+  curl --ssl-revoke-best-effort --fail --silent --show-error --header "PRIVATE-TOKEN: $NOVA_TOKEN" "$1"
 }
 
 # Pages are followed via X-Next-Page (empty on the last page). If the header is
@@ -40,7 +40,7 @@ get_all() {
     url="$base/$endpoint?per_page=$page_size&page=$page"
     headers=$(mktemp) || exit 1
     body=$(mktemp) || { rm -f "$headers"; exit 1; }
-    if ! curl --fail --silent --show-error --dump-header "$headers" --output "$body" \
+    if ! curl --ssl-revoke-best-effort --fail --silent --show-error --dump-header "$headers" --output "$body" \
         --header "PRIVATE-TOKEN: $NOVA_TOKEN" "$url"; then
       rm -f "$headers" "$body"
       echo 'GitLab paged request failed.' >&2
@@ -150,12 +150,12 @@ case $action in
       exit 0
     fi
     if (( has_jq )); then
-      curl --fail --silent --show-error --request POST \
+      curl --ssl-revoke-best-effort --fail --silent --show-error --request POST \
         --header "PRIVATE-TOKEN: $NOVA_TOKEN" \
         --data-urlencode "body@$filename" \
         "$base/discussions/$id/notes" | jq -c '{posted: true, note_id: .id}'
     else
-      curl --fail --silent --show-error --request POST \
+      curl --ssl-revoke-best-effort --fail --silent --show-error --request POST \
         --header "PRIVATE-TOKEN: $NOVA_TOKEN" \
         --data-urlencode "body@$filename" \
         "$base/discussions/$id/notes"
