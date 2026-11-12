@@ -12,7 +12,6 @@ AI 에이전트 시대의 개발방법론(SDD, 하네스 엔지니어링, TDD·�
 - [git-commit-push의 GitLab MR 리뷰 대응 통합 제안 및 실행 스크립트](ai-development/2026-11-gitlab-mr-review-workflow-proposal.md) (2026-11-09, v1.1 2026-11-09)
 - [서브에이전트는 언제 나누는가: 조직도가 아니라 정보 흐름으로](ai-development/2026-11-subagent-boundaries.md) (2026-11-02)
 - [AI Agent 시대의 소프트웨어 개발방법론: 2026년 11월 재점검](ai-development/2026-11-ai-agent-era-dev-methodology.md) (2026-11-05)
-
 - [도메인·설계 맥락을 축적하는 LLM Wiki 도입 제안](ai-development/2026-11-llm-wiki-proposal.md) (2026-11-12)
 
 ## Spring Batch
