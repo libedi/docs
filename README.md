@@ -13,9 +13,11 @@ AI 에이전트 시대의 개발방법론(SDD, 하네스 엔지니어링, TDD·�
 - [서브에이전트는 언제 나누는가: 조직도가 아니라 정보 흐름으로](ai-development/2026-11-subagent-boundaries.md) (2026-11-02)
 - [AI Agent 시대의 소프트웨어 개발방법론: 2026년 11월 재점검](ai-development/2026-11-ai-agent-era-dev-methodology.md) (2026-11-05)
 - [도메인·설계 맥락을 축적하는 LLM Wiki 도입 제안](ai-development/2026-11-llm-wiki-proposal.md) (2026-11-12)
+- [Gradle 멀티모듈에서 스테이징된 파일만 Spotless로 포맷팅하는 제안](ai-development/2026-11-spotless-staged-files-proposal.md) (2026-11-13)
 
 ## Spring Batch
 
 Spring Batch 기반 대용량 배치 설계와 운영에 대한 제안과 정리
 
 - [Spring Batch 대용량 처리 구조의 재시작·오류 처리 설계 제안](spring-batch/2026-10-spring-batch-restart-and-skip-design.md) (2026-10-09)
+
