@@ -2,7 +2,7 @@
 
 - 작성일: 2026-11-19
 - 상태: 리뷰 반영 제안 (프로젝트별 적용 및 검증 필요)
-- 개정일: 2026-11-21
+- 개정일: 2026-11-21 (멀티모듈 Test Fixtures 공통화 추가)
 - 대상: Java 25 / Spring Boot 4 / Spring Batch / MyBatis / Oracle 기반 Gradle Kotlin DSL 멀티모듈 프로젝트
 
 ## TL;DR
@@ -343,9 +343,138 @@ spring:
 
 **2차:** 테스트 규모가 늘어나면 `src/devDbTest` 소스셋 또는 Gradle JVM Test Suite를 검토한다. 연결 확인 캐싱, XML 기반 0건 검사 고도화, CI의 필수 검증 단계, 통합·Smoke의 별도 실행 정책을 환경에 맞게 발전시킨다.
 
+## 11. 멀티모듈 공통화: Convention Plugin + shared:core Test Fixtures
+
+### 11.1 설계 결정
+
+현재 모노레포의 여러 배치 모듈이 `shared:core`를 사용하며, `shared:core`는 **Nexus 게시 대상이 아닌 내부 프로젝트 의존성**으로 소비한다. 개발 DB 테스트도 여러 모듈에서 반복 사용할 예정이므로 Gradle 실행 정책과 JUnit 지원 코드를 분리해 공통화한다. 현재 공통 지원 코드가 두 클래스 정도인 상황에서는 `shared:test` 모듈을 신설하지 않고 `shared:core`의 Test Fixtures를 사용한다.
+
+**Fixture 배치 기준:** 현재 `shared:core` Test Fixtures에는 core 타입 전용 Fixture와 소수의 공통 테스트 인프라(`@DevDbTest` 등)를 함께 둘 수 있다. 이 Fixture가 core 소비 모듈의 테스트에 필요 이상으로 전파되거나 공통 테스트 인프라가 늘어나면 `shared:test` 분리를 재검토한다. 소비 모듈이 Plugin을 통해서만 의존성을 받도록 유지하면, 나중에 패키지를 유지한 채 Convention Plugin의 의존성 한 줄을 교체하는 것으로 이전할 수 있다.
+
+| 위치 | 담당 책임 |
+| --- | --- |
+| `build-logic/src/main/kotlin/dev-db-test-conventions.gradle.kts` | `test` 태그 제외, `devDbTest` 생성, 실패/Skip 로그, JaCoCo 및 캐시 정책, 엄격 모드와 공통 테스트 의존성 |
+| `shared:core/src/main/java` | 기존 운영 코드 및 공통 설정. 테스트 라이브러리를 운영 의존성에 추가하지 않음 |
+| `shared:core/src/testFixtures/java` | `@DevDbTest`, `DevDbReachableCondition` 등 여러 모듈에서 사용하는 JUnit 지원 코드 |
+| 실제 개발 DB 테스트 모듈 | `dev-db-test-conventions` 적용, `@DevDbTest` 테스트와 `src/test/resources/application-dev-db.yml` 작성 |
+
+```text
+build-logic/
+└── src/main/kotlin/
+    └── dev-db-test-conventions.gradle.kts
+
+shared/
+└── core/
+    └── src/
+        ├── main/java/                  # 운영 공통 코드
+        └── testFixtures/java/          # DevDbTest, DevDbReachableCondition
+
+batch-domains/
+└── batch-member/
+    └── batch-member-app/
+        ├── build.gradle.kts            # dev-db-test-conventions 적용
+        ├── src/test/java/              # Oracle 통합·Smoke 테스트
+        └── src/test/resources/
+            └── application-dev-db.yml
+```
+
+### 11.2 shared:core의 Test Fixtures
+
+Gradle의 `java-test-fixtures`를 적용하면 별도 모듈 없이 테스트용 소스셋과 의존성 구성을 분리할 수 있다. 아래는 **개념 예시**로, 버전 카탈로그 alias와 기존 `java-conventions` 구성에 맞춰 조정한다.
+
+```kotlin
+// shared/core/build.gradle.kts
+plugins {
+    id("java-conventions")
+    id("java-test-fixtures")
+}
+
+dependencies {
+    // @DevDbTest의 public 애너테이션에서 JUnit과 Spring Test 타입 사용
+    testFixturesApi(libs.junit.jupiter.api)
+    testFixturesApi(libs.spring.test)
+    // Gradle platform(...) 기반 BOM을 쓰는 경우, Fixture 구성에도 BOM 추가:
+    // testFixturesApi(platform(libs.spring.boot.bom))
+}
+
+// shared:core의 기본 H2 테스트가 개발 DB에 연결되지 않도록 명시적으로 제외
+tasks.named<Test>("test") {
+    useJUnitPlatform { excludeTags("dev-db") }
+}
+```
+
+`@DevDbTest`와 `DevDbReachableCondition`은 `src/testFixtures/java`에 두고, 실제 테스트는 소비 모듈의 `src/test/java`에 둔다. Fixture 코드는 `shared:core`의 주 운영 클래스패스와 별도로 선택되는 Test Fixtures variant로 소비한다. `shared:core`는 내부 프로젝트 의존성이며 Nexus에 게시하지 않는다. **기존의 `implementation(project(":shared:core"))`만으로 Fixture 코드가 소비되는 것은 아니다.**
+
+`java-test-fixtures`는 `shared:core` 자신의 `test`에도 Fixture 의존성을 제공하므로, 이 모듈의 기본 `test`에도 `excludeTags("dev-db")`가 반드시 있어야 한다. 그렇지 않으면 core 내부 테스트가 일반 빌드 과정에서 개발 DB에 접속하거나 JaCoCo에 섞일 수 있다.
+
+테스트 지원 코드의 public API가 JUnit·Spring Test 타입을 참조하므로 `testFixturesApi`를 사용한다. 일반 `implementation`에 JUnit을 넣지 않는다. Gradle `platform(...)` 방식으로 Spring BOM을 가져온다면 `testFixturesApi` 등의 새 구성에도 BOM 제약이 전파되는지 확인하고 필요 시 해당 구성에 플랫폼을 추가한다. 반면 `io.spring.dependency-management` 사용 시의 적용 범위는 실제 프로젝트 설정을 기준으로 확인한다. JUnit Engine 및 Spring Boot Test 등 **실제 테스트 실행 의존성은 소비 모듈의 기존 테스트 Convention/의존성에서 제공**되어야 한다.
+
+### 11.3 Convention Plugin이 Fixture 의존성까지 구성
+
+여러 모듈에 반복할 `testImplementation(testFixtures(project(":shared:core")))`를 선택 적용하는 Convention Plugin 내부로 옮긴다.
+
+```kotlin
+// build-logic/src/main/kotlin/dev-db-test-conventions.gradle.kts
+plugins {
+    id("java")
+    id("jacoco")
+}
+
+dependencies {
+    add("testImplementation", testFixtures(project(":shared:core")))
+}
+
+// 3장의 기존 test/devDbTest 설정을 여기로 이동한다.
+// 해당 설정을 각 모듈에 중복 선언하지 않는다.
+```
+
+**주의:** `testFixtures(project(":shared:core"))`는 `DependencyHandler`가 제공하는 API로 Precompiled Script Plugin의 `dependencies` 블록에서 사용할 수 있다. 실제 프로젝트에서 검증할 핵심은 소비 대상인 `:shared:core`에 `java-test-fixtures`가 적용돼 Fixture variant가 제공되는지 여부다. 도메인 테스트에 필요한 `spring-conventions` 등 기존 Plugin은 유지하되 중복 적용·구성 덮어쓰기를 확인한다.
+
+개발 DB 테스트가 필요한 소비 모듈에서만 Plugin을 적용한다.
+
+```kotlin
+// batch-member-app/build.gradle.kts
+plugins {
+    id("spring-conventions")
+    id("dev-db-test-conventions")
+}
+// 별도의 testImplementation(testFixtures(project(":shared:core"))) 선언 불필요
+```
+
+- `shared:core` **자체에는** `dev-db-test-conventions`를 적용하지 않는다. 동일 프로젝트의 Fixture를 다시 프로젝트 의존성으로 추가하는 자기 참조를 피한다.
+- Plugin 적용은 **opt-in**이며 모든 하위 프로젝트에 일괄 적용하지 않는다. 테스트가 없는 모듈의 불필요한 태스크 등록과 0건 검증 문제를 줄인다.
+- 공통 테스트 지원 의존성을 Convention Plugin에서만 추가하는 정책을 지키면, 소비 모듈은 Plugin 미적용 시 `@DevDbTest`를 컴파일할 수 없어 일반 `test`로 잘못 실행하는 오류를 구조적으로 줄일 수 있다. 단, 별도 수동 의존성 추가까지 원천 차단하는 것은 아니며 `shared:core` 자신의 `test`는 위에서 별도 보호한다.
+- `devDbTest`를 `check`/`build`에 연결하지 않고, 기본 `test`와 JaCoCo/SpotBugs 게이트를 유지한다. 3~9장의 테스트 실행 정책은 그대로 재사용한다.
+- `application-dev-db.yml`은 대상 모듈의 테스트 리소스에 두어 도메인별 DataSource를 명시한다. DB 비밀값과 프로필 설정을 Convention Plugin 안에 넣지 않는다.
+
+### 11.4 내부 프로젝트 의존성과 빌드 환경 확인
+
+`shared:core`는 **Nexus에 게시하지 않는 내부 프로젝트 모듈**이므로 Test Fixtures variant의 외부 게시용 GMM/POM 정책은 이번 제안의 검토 대상에서 제외한다. 다만 일반 운영 `runtimeClasspath`에 JUnit·Spring Test가 유입되지 않는지는 의존성 리포트로 검증한다.
+
+폐쇄망 Nexus에서 Fixture 코드가 참조하는 JUnit/Spring Test 외부 라이브러리를 해석할 수 있는지 확인한다. 새 소스셋이 추가되면 SpotBugs·Checkstyle·JaCoCo 등의 태스크 생성·`check` 연결 범위를 살펴보고, Fixture 코드가 의도한 품질 게이트를 통과하는지 점검한다. Convention Plugin 추가 전후의 Gradle 구성 비용과 Configuration Cache 호환성도 비교한다.
+
+### 11.5 도입 체크리스트
+
+- [ ] `shared:core`에 `java-test-fixtures` 적용 후 `src/testFixtures/java` 컴파일 성공
+- [ ] Fixture의 `testFixturesApi` 의존성이 소비 모듈 테스트 클래스패스에 제공되는지 확인
+- [ ] `dev-db-test-conventions` 적용만으로 `devDbTest`와 Fixture 의존성이 등록되는지 확인
+- [ ] `shared:core`에는 개발 DB Convention Plugin을 적용하지 않되, **기본 `test`에는 `excludeTags("dev-db")`를 직접 적용**했는지 확인
+- [ ] `shared:core` 기본 `test`가 개발 DB에 접속하지 않고 JaCoCo 집계에 개발 DB 테스트가 포함되지 않는지 확인
+- [ ] 소비 모듈의 기존 H2 `test`, JaCoCo, SpotBugs 정책이 변경되지 않는지 확인
+- [ ] 운영 `runtimeClasspath`에 JUnit·Spring Test 의존성이 Fixture로 인해 유입되지 않는지 확인
+- [ ] `shared:core`가 Nexus 게시 대상이 아닌 내부 프로젝트 모듈이라는 전제 확인
+- [ ] JUnit/Spring Test 의존성 버전이 `testFixturesApi`에서 정상 해석되는지 확인 (BOM 관리 방식별 차이 점검)
+- [ ] Fixture 소스셋에 SpotBugs/Checkstyle 등 품질 검사 태스크가 생성·연결되는지와 의도한 게이트 통과 여부 확인
+- [ ] Plugin을 적용하지 않은 소비 모듈에서 `@DevDbTest`가 암묵적으로 노출되지 않는지 확인
+- [ ] Gradle 9.9.1에서 `--configuration-cache` 사용 시 추가 Plugin 구성과 `devDbTest` 실행 검증
+
+**결정:** Nexus 게시 대상이 아닌 현재 `shared:core`의 Test Fixtures를 우선 채택한다. 공통 인프라가 늘어나거나 Fixture가 core 소비 모듈에 과도하게 전파되면 `shared:test` 분리를 재검토한다. 이때 같은 Java 패키지를 유지하고 Convention Plugin의 의존성 선언만 변경하도록 설계하여 소비 모듈 변경을 최소화한다.
+
 ## 참고 자료
 
 - [Gradle Test 태스크](https://docs.gradle.org/current/dsl/org.gradle.api.tasks.testing.Test.html)
 - [Gradle JaCoCo Plugin](https://docs.gradle.org/current/userguide/jacoco_plugin.html)
 - [Gradle JVM Test Suite](https://docs.gradle.org/current/userguide/jvm_test_suite_plugin.html)
+- [Gradle Java Test Fixtures (9.9.1)](https://docs.gradle.org/9.9.1/userguide/java_test_fixtures_plugin.html)
+- [Gradle Convention Plugins](https://docs.gradle.org/current/userguide/implementing_gradle_plugins_convention.html)
 - [JUnit 5 User Guide — Tagging and Filtering](https://docs.junit.org/current/user-guide/#writing-tests-tagging-and-filtering)
