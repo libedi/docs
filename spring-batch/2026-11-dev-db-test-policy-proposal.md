@@ -9,7 +9,7 @@
 
 기존 H2 테스트는 기본 `test`에서 항상 실행하여 품질 게이트를 유지한다. 개발 Oracle DB 테스트는 `@DevDbTest`(JUnit `dev-db` 태그·`dev-db` 프로필·실행 조건 결합)와 별도 `devDbTest` Gradle 태스크로 분리하고, **`check`/`build`에 연결하지 않는다.** 이것이 일반 CI 빌드를 개발 DB의 가용성과 분리하는 핵심이다.
 
-명시적으로 `devDbTest`를 실행했을 때는 `ignoreFailures=false`를 기본으로 하여 실제 SQL·Assertion 결함을 빌드 실패로 보고한다. 네트워크 접속 불가나 설정 미비는 사전 `ExecutionCondition`에서 기본적으로 Skip 처리하고, `-PdevDb.required=true`를 지정하면 이를 Fail로 전환한다. 단, 발견된 테스트가 아예 0건이면 조건 검사가 실행되지 않으므로 별도 확인이 필요하다. 개발 DB 테스트는 JaCoCo 계측에서 제외해 환경 가용성에 따른 커버리지 변동을 막는다.
+명시적으로 `devDbTest`를 실행했을 때는 `ignoreFailures=false`를 기본으로 하여 실제 SQL·Assertion 결함을 빌드 실패로 보고한다. 네트워크 접속 불가나 설정 미비는 사전 `ExecutionCondition`에서 기본적으로 Skip 처리하고, `-PdevDb.required=true`를 지정하면 이를 Fail로 전환한다. 테스트가 0건 발견되면 조건 검사가 실행되지 않으므로, 엄격 모드에서는 JUnit XML 리포트의 건수도 별도로 검증한다. 개발 DB 테스트는 JaCoCo 계측에서 제외해 환경 가용성에 따른 커버리지 변동을 막는다.
 
 **핵심 원칙:** 기본 빌드 보호와 명시적 검증의 실패 판정을 구분한다. `BUILD SUCCESSFUL`은 개발 DB 검증이 실제로 수행되었음을 보장하지 않는다.
 
@@ -25,7 +25,7 @@
 | 개발 DB 테스트 | `devDbTest`에서 별도 실행, 초기에는 opt-in |
 | 개발 DB 테스트 실패 | 연결 불가 시 Skip, 실행된 SQL·Assertion 실패 시 Build Fail |
 | JaCoCo | 개발 DB 테스트 실행의 계측 데이터를 수집하지 않음 |
-| 강제 검증 전환 | `-PdevDb.required=true`에서 미설정·접속 불가를 Fail 처리. 테스트 0건 검출은 별도 검증 |
+| 강제 검증 전환 | `-PdevDb.required=true`에서 미설정·접속 불가를 Fail 처리하고 JUnit XML 기준 0건도 실패 처리 |
 | 안전성 | 개발 DB에서 기본은 읽기 전용, 비밀정보를 소스에 저장하지 않음 |
 
 ## 2. 테스트 분류
@@ -65,11 +65,36 @@ val devDbTest by tasks.registering(Test::class) {
     // 실행한 테스트의 SQL·Assertion 실패는 Build Fail
     ignoreFailures = false
 
-    // 필수 검증 환경에서는 DB 미설정·접속 불가를 Skip 대신 Fail
-    systemProperty(
-        "devDb.required",
-        providers.gradleProperty("devDb.required").getOrElse("false")
-    )
+    // 필수 검증 환경에서는 DB 미설정·접속 불가 및 0건 실행을 Fail
+    val required = providers.gradleProperty("devDb.required")
+        .map(String::toBoolean)
+        .getOrElse(false)
+    systemProperty("devDb.required", required.toString())
+
+    // 필수 검증에서는 태그 오류로 테스트가 0건인 경우도 실패 처리
+    // Test 태스크가 실제 실행될 때의 리포트만 집계하도록 먼저 정리
+    val junitXmlDir = reports.junitXml.outputLocation
+    reports.junitXml.required.set(true)
+    if (required) {
+        doFirst {
+            delete(junitXmlDir.get().asFile)
+        }
+        doLast {
+            val dir = junitXmlDir.get().asFile
+            val testCount = dir.walkTopDown()
+                .filter { it.isFile && it.extension == "xml" }
+                .sumOf { file ->
+                    Regex("""<testsuite\b[^>]*\btests="(\d+)"""")
+                        .find(file.readText())
+                        ?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                }
+            if (testCount == 0) {
+                throw GradleException(
+                    "devDb.required=true but no dev-db tests were discovered"
+                )
+            }
+        }
+    }
 
     // Skip/실패 결과를 콘솔에 노출
     testLogging {
@@ -92,8 +117,9 @@ val devDbTest by tasks.registering(Test::class) {
 - `dev-db` 태그를 일반 `test`에서 제외하고 `devDbTest`를 `check`/`build`에 연결하지 않는 **두 장치**가 기본 빌드를 보호한다.
 - `shouldRunAfter`는 실행 순서만 지정하며 의존성을 만들지 않는다.
 - `devDbTest`는 외부 DB의 가용성·스키마·데이터·권한에 따라 결과가 달라지므로 `outputs.upToDateWhen { false }`와 `outputs.cacheIf { false }`로 이전 실행 결과의 UP-TO-DATE 판정과 빌드 캐시 재사용을 막는다. 이 설정은 일반 H2 `test`에는 적용하지 않는다.
+- 엄격 모드의 `doLast`는 생성된 JUnit XML의 `testsuite`별 테스트 건수를 합산한다. XML은 태스크 실행 전에 삭제하여 잔여 리포트의 오판을 방지한다. 이는 문서용 최소 예시이며, 실제 적용 시 Gradle 9.9.1에서 XML 생성 경로, 테스트 0건/전부 Skip, 태그 불일치와 실패 처리까지 검증해야 한다.
 - 수동으로 `devDbTest`를 실행하면 실제 SQL·Assertion 실패는 빌드 실패가 되어야 하므로 `ignoreFailures`를 끄는 것이 기본이다. 과도기의 임시 비차단이 꼭 필요하면 별도 명시적 정책으로 관리하고, 실패를 숨기지 않는 리포트를 확보한다.
-- Gradle 9에서는 테스트 파일이 있지만 필터를 통과하는 테스트가 없을 때 실패할 수 있다. 태스크를 개발 DB 테스트가 있는 모듈에만 등록하는 것이 우선이다. 모듈별 조건부 태스크 등록이 어렵다면 `failOnNoDiscoveredTests = false`를 선택적으로 검토하되, 태그 오류로 인한 0건 실행을 감추는 위험을 수용할지 결정한다.
+- 개발 DB 테스트가 필요한 모듈에만 태스크를 등록하는 것은 의도를 명확히 하고 불필요한 실행·설정을 줄이기 위한 권장이다. JUnit Platform의 `includeTags`로 테스트가 0건이 되는 경우 Gradle 9의 `failOnNoDiscoveredTests`가 이를 잡아주지 않을 수 있으므로, 별도 0건 검증을 유지한다([Gradle 이슈 #38578](https://github.com/gradle/gradle/issues/38578)). `failOnNoDiscoveredTests = false`를 설정하는 것은 이 문제의 해결책이 아니다.
 - IDE에서 `dev-db` 테스트를 일반 Gradle `test --tests`로 실행하면 태그 제외로 0건이 될 수 있다. Kiro/VS Code의 Java Test Runner 사용 여부를 확인하고, 확실한 경로로는 `./gradlew :대상모듈:devDbTest --tests '패키지.테스트클래스'`를 사용한다.
 - Java 소스셋·JaCoCo 구성을 공통 convention plugin으로 관리한다면, 이 정책 역시 개발 DB 대상 모듈에 적용하는 convention으로 추출할 수 있다.
 
@@ -190,7 +216,7 @@ public final class DevDbReachableCondition implements ExecutionCondition {
 - TCP 연결 가능은 JDBC 인증·서비스명·스키마·권한이 정상이라는 뜻이 아니다. **DB 인증·SQL 실패를 Skip 처리하지 않는다.**
 - 메서드 수준의 조건 평가는 곧바로 Enabled를 반환하며 **클래스 수준에서만 소켓 검사를 수행**한다. `@DevDbTest`를 클래스에만 부착한다는 전제이며, 메서드 단독 사용까지 허용한다면 별도 처리가 필요하다. 여러 테스트 클래스가 있으면 클래스별 검사는 남는다. 실제 구현에서는 `ExtensionContext.getRoot().getStore(Namespace...)`를 사용해 실행 범위 안에서 **동일 host/port**의 결과를 캐싱하는 방안을 검토한다(네트워크 상태 변경에 따른 캐시 만료 정책도 결정).
 - `DEV_DB_HOST`/`DEV_DB_PORT`는 실제 JDBC URL의 목적지와 일치하도록 관리한다. 특히 RAC/SCAN, 프록시, 다중 주소를 사용하는 경우 단순 소켓 확인은 근사 판정임을 문서화한다.
-- `-PdevDb.required=true`를 사용하면 DB 미설정 또는 네트워크 미접속 시 조건 평가에서 예외가 발생하여 Fail로 처리된다. 단, 태그 불일치나 테스트 0건으로 `ExecutionCondition` 자체가 실행되지 않는 경우까지 보장하지는 않으므로, 필수 CI Job에서는 테스트 발견/실행 건수 검증도 별도로 유지한다.
+- `-PdevDb.required=true`를 사용하면 DB 미설정 또는 네트워크 미접속 시 조건 평가에서 예외가 발생하여 Fail로 처리된다. 태그 불일치로 `ExecutionCondition` 자체가 실행되지 않는 상황은 Gradle의 JUnit XML 0건 검사에서 처리한다. XML 집계 로직이 해당 Gradle 버전에서 올바르게 동작하는지 검증해야 한다.
 
 ### 4.3 Profile별 설정 파일
 
@@ -248,7 +274,7 @@ spring:
 
 멀티모듈에서는 실제 대상 모듈 경로를 사용한다. 테스트 리포트는 해당 모듈의 `build/reports/tests/devDbTest/`에서 확인한다. IDE의 Gradle `test --tests` 실행은 일반 `test`의 태그 필터에 의해 대상이 발견되지 않을 수 있으므로 별도 태스크를 사용한다.
 
-**주의:** `devDbTest`는 매번 새로 실행되도록 증분 판정·빌드 캐시를 비활성화한다. `--rerun-tasks`를 매번 수동으로 붙이는 방식에 의존하지 않는다. `testLogging`의 `SKIPPED`/`FAILED` 이벤트로 콘솔에서 결과를 확인할 수 있지만, `BUILD SUCCESSFUL`만으로 실제 Oracle 테스트가 실행되었다고 판단하면 안 된다. 필수 검증에서는 테스트 발견/실행 건수도 확인한다.
+**주의:** `devDbTest`는 매번 새로 실행되도록 증분 판정·빌드 캐시를 비활성화한다. `--rerun-tasks`를 매번 수동으로 붙이는 방식에 의존하지 않는다. `testLogging`의 `SKIPPED`/`FAILED` 이벤트로 콘솔에서 결과를 확인할 수 있지만, `BUILD SUCCESSFUL`만으로 실제 Oracle 테스트가 실행되었다고 판단하면 안 된다. 필수 검증에서는 JUnit XML 기반 0건 검사가 제대로 동작하는지 확인한다.
 
 ## 6. JaCoCo 제외 정책과 확인 사항
 
@@ -273,9 +299,9 @@ spring:
 | JDBC 성공, SQL/Assertion 오류 | 실제 테스트 Fail | Build Fail |
 | SQL/Assertion 성공 | Pass | Success |
 
-`ignoreFailures=false`는 명시적 테스트 실행 시 결함을 숨기지 않기 위한 기본값이다. `ExecutionCondition`의 Skip은 DB 미접속을 통과시켜도, `testLogging`으로 콘솔에 Skip을 표시한다. 엄격 모드에서는 이 두 상황을 Fail로 전환한다. 단, 테스트가 전혀 발견되지 않는 문제는 별도 검증 대상이다.
+`ignoreFailures=false`는 명시적 테스트 실행 시 결함을 숨기지 않기 위한 기본값이다. `ExecutionCondition`의 Skip은 DB 미접속을 통과시켜도, `testLogging`으로 콘솔에 Skip을 표시한다. 엄격 모드에서는 이 두 상황을 Fail로 전환한다. 태그 오류 등으로 테스트가 전혀 발견되지 않으면 엄격 모드의 JUnit XML 0건 검사에서 Fail 처리한다.
 
-후속 단계에서는 여러 테스트 클래스 간 접속 사전 확인 중복을 최소화한다. 필수 CI 검증에서는 `-PdevDb.required=true`를 사용하고, 테스트 미발견에 대비해 실행 건수도 검증한다. CI 파이프라인이 개발 DB 검증 결과를 비차단으로 운영해야 한다면 Gradle에서 결과를 성공으로 위장하기보다, 별도 CI Job(예: GitLab `allow_failure: true`)으로 상태를 보존한다.
+후속 단계에서는 여러 테스트 클래스 간 접속 사전 확인 중복을 최소화한다. 필수 CI 검증에서는 `-PdevDb.required=true`를 사용하고, JUnit XML 기반 0건 검사의 동작도 실제 Gradle 환경에서 검증한다. CI 파이프라인이 개발 DB 검증 결과를 비차단으로 운영해야 한다면 Gradle에서 결과를 성공으로 위장하기보다, 별도 CI Job(예: GitLab `allow_failure: true`)으로 상태를 보존한다.
 
 ## 8. 개발 DB 사용 시 안전 수칙
 
@@ -301,18 +327,20 @@ spring:
 - [ ] `devDbTest`를 연속 두 번 실행할 때 두 번째가 `UP-TO-DATE` 또는 `FROM-CACHE`로 건너뛰지 않고 실제 실행되는지 확인
 - [ ] 개발 DB 접속 불가로 Skip한 뒤 네트워크 복구 후 재실행 시 실제 테스트가 수행되는지 확인
 - [ ] `devDbTest` 실행 시 JaCoCo 비활성화 및 통합 리포트 제외 확인
-- [ ] 개발 DB 테스트가 없는 모듈에서 0건 발견에 따른 Gradle 9 실패 여부를 확인하고 등록 범위 또는 정책 조정
+- [ ] 개발 DB 테스트가 필요한 모듈에만 `devDbTest`를 등록했는지 확인
+- [ ] Gradle 9.9.1에서 `includeTags`로 테스트가 0건인 경우 실제 판정을 확인하고 엄격 모드의 JUnit XML 0건 검사가 Fail을 발생시키는지 확인
+- [ ] 엄격 모드의 XML 리포트 디렉터리가 실행 전에 정리되어 과거 테스트 건수가 섞이지 않는지 확인
 - [ ] IDE(Kiro/VS Code 등)에서 `dev-db` 테스트 실행 경로 확인
 - [ ] Spring Batch Job 자동 실행·메타데이터 자동 생성·Spring SQL 초기화가 비활성화되는지 확인
 - [ ] H2용 DDL/DML 초기화 스크립트가 Oracle DB에서 실행되지 않으며 다중 DataSource의 커스텀 초기화도 안전한지 확인
 - [ ] 읽기 전용 계정과 테스트 데이터 안전성 확인
-- [ ] 필수 CI 검증에서 `-PdevDb.required=true` 동작과 테스트 0건 발견/실행 감지를 검증 (`includeTags`만으로 0건이 된 경우도 포함). `failOnNoDiscoveredTests`만으로 충분하다고 가정하지 않고 실제 Gradle 버전에서 확인
+- [ ] 필수 CI 검증에서 `-PdevDb.required=true` 동작 및 `includeTags`로 0건인 경우의 JUnit XML 검사 결과 확인. `failOnNoDiscoveredTests`만으로 충분하다고 가정하지 않음
 
 ## 10. 제안 결론
 
 **1차:** 동일 `src/test` 소스셋 + `@DevDbTest` 합성 애너테이션 + 클래스 수준 연결 사전 확인 및 Skip(필수 검증 시 Fail) + 별도 `devDbTest` 태스크(`ignoreFailures=false`, UP-TO-DATE/빌드 캐시 비활성화) + Skip/Fail 콘솔 출력 + JaCoCo 수집 제외 + SQL 초기화 방지를 포함한 테스트 전용 `application-dev-db.yml`을 도입한다. 일반 `build`에는 개발 DB 테스트를 연결하지 않는다.
 
-**2차:** 테스트 규모가 늘어나면 `src/devDbTest` 소스셋 또는 Gradle JVM Test Suite를 검토한다. 연결 확인 캐싱, 테스트 미발견/실행 건수 검증, CI의 필수 검증 단계, 통합·Smoke의 별도 실행 정책을 환경에 맞게 발전시킨다.
+**2차:** 테스트 규모가 늘어나면 `src/devDbTest` 소스셋 또는 Gradle JVM Test Suite를 검토한다. 연결 확인 캐싱, XML 기반 0건 검사 고도화, CI의 필수 검증 단계, 통합·Smoke의 별도 실행 정책을 환경에 맞게 발전시킨다.
 
 ## 참고 자료
 
