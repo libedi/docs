@@ -77,7 +77,7 @@ val devDbTest by tasks.registering(Test::class) {
     reports.junitXml.required.set(true)
     if (required) {
         doFirst {
-            delete(junitXmlDir.get().asFile)
+            junitXmlDir.get().asFile.deleteRecursively()
         }
         doLast {
             val dir = junitXmlDir.get().asFile
@@ -330,6 +330,7 @@ spring:
 - [ ] 개발 DB 테스트가 필요한 모듈에만 `devDbTest`를 등록했는지 확인
 - [ ] Gradle 9.9.1에서 `includeTags`로 테스트가 0건인 경우 실제 판정을 확인하고 엄격 모드의 JUnit XML 0건 검사가 Fail을 발생시키는지 확인
 - [ ] 엄격 모드의 XML 리포트 디렉터리가 실행 전에 정리되어 과거 테스트 건수가 섞이지 않는지 확인
+- [ ] `./gradlew devDbTest --configuration-cache -PdevDb.required=true` 실행과 재실행에서 Configuration Cache 관련 오류 없이 동작하는지 확인
 - [ ] IDE(Kiro/VS Code 등)에서 `dev-db` 테스트 실행 경로 확인
 - [ ] Spring Batch Job 자동 실행·메타데이터 자동 생성·Spring SQL 초기화가 비활성화되는지 확인
 - [ ] H2용 DDL/DML 초기화 스크립트가 Oracle DB에서 실행되지 않으며 다중 DataSource의 커스텀 초기화도 안전한지 확인
