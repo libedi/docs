@@ -2,14 +2,14 @@
 
 - 작성일: 2026-11-19
 - 상태: 리뷰 반영 제안 (프로젝트별 적용 및 검증 필요)
-- 개정일: 2026-11-20
+- 개정일: 2026-11-21
 - 대상: Java 25 / Spring Boot 4 / Spring Batch / MyBatis / Oracle 기반 Gradle Kotlin DSL 멀티모듈 프로젝트
 
 ## TL;DR
 
 기존 H2 테스트는 기본 `test`에서 항상 실행하여 품질 게이트를 유지한다. 개발 Oracle DB 테스트는 `@DevDbTest`(JUnit `dev-db` 태그·`dev-db` 프로필·실행 조건 결합)와 별도 `devDbTest` Gradle 태스크로 분리하고, **`check`/`build`에 연결하지 않는다.** 이것이 일반 CI 빌드를 개발 DB의 가용성과 분리하는 핵심이다.
 
-명시적으로 `devDbTest`를 실행했을 때는 `ignoreFailures=false`를 기본으로 하여 실제 SQL·Assertion 결함을 빌드 실패로 보고한다. 네트워크 접속 불가나 설정 미비는 사전 `ExecutionCondition`에서 Skip 처리하되, 검증을 강제하는 환경에서는 Skip을 허용하지 않는 추가 정책이 필요하다. 개발 DB 테스트는 JaCoCo 계측에서 제외해 환경 가용성에 따른 커버리지 변동을 막는다.
+명시적으로 `devDbTest`를 실행했을 때는 `ignoreFailures=false`를 기본으로 하여 실제 SQL·Assertion 결함을 빌드 실패로 보고한다. 네트워크 접속 불가나 설정 미비는 사전 `ExecutionCondition`에서 기본적으로 Skip 처리하고, `-PdevDb.required=true`를 지정하면 이를 Fail로 전환한다. 단, 발견된 테스트가 아예 0건이면 조건 검사가 실행되지 않으므로 별도 확인이 필요하다. 개발 DB 테스트는 JaCoCo 계측에서 제외해 환경 가용성에 따른 커버리지 변동을 막는다.
 
 **핵심 원칙:** 기본 빌드 보호와 명시적 검증의 실패 판정을 구분한다. `BUILD SUCCESSFUL`은 개발 DB 검증이 실제로 수행되었음을 보장하지 않는다.
 
@@ -25,7 +25,7 @@
 | 개발 DB 테스트 | `devDbTest`에서 별도 실행, 초기에는 opt-in |
 | 개발 DB 테스트 실패 | 연결 불가 시 Skip, 실행된 SQL·Assertion 실패 시 Build Fail |
 | JaCoCo | 개발 DB 테스트 실행의 계측 데이터를 수집하지 않음 |
-| 강제 검증 전환 | 실행된 테스트의 실패는 기본적으로 강제, 전체 Skip은 별도 정책으로 감지 |
+| 강제 검증 전환 | `-PdevDb.required=true`에서 미설정·접속 불가를 Fail 처리. 테스트 0건 검출은 별도 검증 |
 | 안전성 | 개발 DB에서 기본은 읽기 전용, 비밀정보를 소스에 저장하지 않음 |
 
 ## 2. 테스트 분류
@@ -45,6 +45,7 @@
 ```kotlin
 import org.gradle.api.tasks.testing.Test
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.gradle.api.tasks.testing.logging.TestLogEvent
 
 tasks.named<Test>("test") {
     useJUnitPlatform {
@@ -63,6 +64,17 @@ val devDbTest by tasks.registering(Test::class) {
 
     // 실행한 테스트의 SQL·Assertion 실패는 Build Fail
     ignoreFailures = false
+
+    // 필수 검증 환경에서는 DB 미설정·접속 불가를 Skip 대신 Fail
+    systemProperty(
+        "devDb.required",
+        providers.gradleProperty("devDb.required").getOrElse("false")
+    )
+
+    // Skip/실패 결과를 콘솔에 노출
+    testLogging {
+        events(TestLogEvent.SKIPPED, TestLogEvent.FAILED)
+    }
 
     // 개발 DB 테스트의 커버리지 기여분은 수집하지 않음
     extensions.configure<JacocoTaskExtension> {
@@ -117,7 +129,7 @@ class OracleMemberMapperSmokeTest {
 
 ### 4.2 Context 생성 전에 연결 가용성 확인
 
-JUnit Jupiter `ExecutionCondition`은 SpringExtension의 테스트 인스턴스 준비/Context 사용보다 앞서 평가될 수 있으므로 사전 네트워크 확인에 활용한다. 아래는 **설명용 골격**으로, 실제 코드에서는 포트 파싱·캐시 키와 환경별 정책의 테스트를 추가한다.
+JUnit Jupiter의 `ExecutionCondition`은 테스트 클래스 인스턴스 생성과 SpringExtension의 `BeforeAllCallback`보다 먼저 평가되므로 사전 네트워크 확인에 활용한다. 아래는 **설명용 골격**으로, 실제 코드에서는 실행 조건과 환경별 정책을 별도로 테스트한다.
 
 ```java
 import java.io.IOException;
@@ -130,11 +142,16 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 public final class DevDbReachableCondition implements ExecutionCondition {
     @Override
     public ConditionEvaluationResult evaluateExecutionCondition(ExtensionContext context) {
+        // 클래스 수준에서 검사하므로 메서드 수준의 반복 연결은 생략한다.
+        if (context.getTestMethod().isPresent()) {
+            return ConditionEvaluationResult.enabled("Checked at class level");
+        }
+
         String host = System.getenv("DEV_DB_HOST");
         String port = System.getenv("DEV_DB_PORT");
 
         if (host == null || host.isBlank() || port == null || port.isBlank()) {
-            return ConditionEvaluationResult.disabled("DEV_DB_HOST/PORT not configured");
+            return unavailable("DEV_DB_HOST/PORT not configured");
         }
 
         final int portNumber;
@@ -151,17 +168,24 @@ public final class DevDbReachableCondition implements ExecutionCondition {
             socket.connect(new InetSocketAddress(host, portNumber), 2000);
             return ConditionEvaluationResult.enabled("Development DB endpoint reachable");
         } catch (IOException e) {
-            return ConditionEvaluationResult.disabled("Development DB endpoint unreachable");
+            return unavailable("Development DB endpoint unreachable");
         }
+    }
+
+    private static ConditionEvaluationResult unavailable(String reason) {
+        if (Boolean.getBoolean("devDb.required")) {
+            throw new IllegalStateException("Development DB required: " + reason);
+        }
+        return ConditionEvaluationResult.disabled(reason);
     }
 }
 ```
 
 - 기본 로컬 정책: `DEV_DB_HOST`/`DEV_DB_PORT` 미설정 또는 네트워크 미접속은 Skip. 포트 형식 오류는 설정 결함으로 Fail.
 - TCP 연결 가능은 JDBC 인증·서비스명·스키마·권한이 정상이라는 뜻이 아니다. **DB 인증·SQL 실패를 Skip 처리하지 않는다.**
-- 위 예시는 테스트 클래스마다 소켓 검사를 한다. 실제 구현에서는 `ExtensionContext.getRoot().getStore(Namespace...)`를 사용해 실행 범위 안에서 **동일 host/port**의 결과를 캐싱하는 방안을 검토한다(네트워크 상태 변경에 따른 캐시 만료 정책도 결정).
+- 메서드 수준의 조건 평가는 곧바로 Enabled를 반환하며 **클래스 수준에서만 소켓 검사를 수행**한다. `@DevDbTest`를 클래스에만 부착한다는 전제이며, 메서드 단독 사용까지 허용한다면 별도 처리가 필요하다. 여러 테스트 클래스가 있으면 클래스별 검사는 남는다. 실제 구현에서는 `ExtensionContext.getRoot().getStore(Namespace...)`를 사용해 실행 범위 안에서 **동일 host/port**의 결과를 캐싱하는 방안을 검토한다(네트워크 상태 변경에 따른 캐시 만료 정책도 결정).
 - `DEV_DB_HOST`/`DEV_DB_PORT`는 실제 JDBC URL의 목적지와 일치하도록 관리한다. 특히 RAC/SCAN, 프록시, 다중 주소를 사용하는 경우 단순 소켓 확인은 근사 판정임을 문서화한다.
-- 중요한 한계: 실행된 테스트가 모두 Skip될 경우 `devDbTest`는 성공할 수 있다. DB 검증을 필수로 요구하는 CI Job에서는 사전 접속 검사·실행 건수 확인 또는 별도 엄격한 정책으로 **전체 Skip을 실패**로 취급해야 한다.
+- `-PdevDb.required=true`를 사용하면 DB 미설정 또는 네트워크 미접속 시 조건 평가에서 예외가 발생하여 Fail로 처리된다. 단, 태그 불일치나 테스트 0건으로 `ExecutionCondition` 자체가 실행되지 않는 경우까지 보장하지는 않으므로, 필수 CI Job에서는 테스트 발견/실행 건수 검증도 별도로 유지한다.
 
 ### 4.3 Profile별 설정 파일
 
@@ -183,6 +207,9 @@ spring:
     username: ${DEV_DB_USERNAME}
     password: ${DEV_DB_PASSWORD}
     driver-class-name: oracle.jdbc.OracleDriver
+  sql:
+    init:
+      mode: never
   batch:
     job:
       enabled: false
@@ -191,7 +218,7 @@ spring:
 ```
 
 - `spring.datasource`는 Boot 기본 DataSource를 사용할 때만 해당한다. 현재처럼 별도 `@ConfigurationProperties`로 도메인 A/B, Batch 메타데이터 DB를 구성한다면 **실제 설정 prefix별로 명시적으로 치환**해야 한다.
-- Spring Batch 자동 Job 실행과 메타 테이블 자동 생성은 비활성화한다. 이 설정은 사용자 정의 Job 실행 코드·별도 초기화 코드·Mapper의 DML을 막지는 않는다.
+- `spring.sql.init.mode=never`로 기본 `application.yml`에서 병합될 수 있는 H2용 `schema-locations`/`data-locations` 초기화를 차단한다. Spring Batch 자동 Job 실행과 메타 테이블 자동 생성도 비활성화한다. 이 설정들은 사용자 정의 `DataSourceInitializer`, `ResourceDatabasePopulator`, 별도 초기화 코드나 Mapper의 DML까지 막지는 않는다. 특히 다중 DataSource의 독자적인 초기화 로직을 점검한다.
 - `@SpringBootTest`는 전체 Context를 띄우므로 Mapper 검증에서는 가능한 최소 Context 또는 `@MybatisTest` 및 `@AutoConfigureTestDatabase(replace = NONE)`를 검토한다. 다중 SqlSessionFactory가 있으면 슬라이스에서 어떤 구성이 로드되는지 검증해야 한다.
 - `DEV_DB_URL`과 사전 확인용 `DEV_DB_HOST/PORT`의 불일치는 잘못된 Skip/Enabled를 만들 수 있다. 비밀정보는 Git에 넣지 않는다.
 
@@ -207,13 +234,16 @@ spring:
 # 두 그룹 동시 실행: 개발 DB 검증은 명시 요청된 경우에만 추가
 ./gradlew test devDbTest
 
+# 필수 DB 검증: 접속 불가 또는 설정 미비도 실패 처리
+./gradlew devDbTest -PdevDb.required=true
+
 # 특정 개발 DB 테스트만 실행 (멀티모듈 예시)
 ./gradlew :batch-domains:batch-member:batch-member-app:devDbTest --tests 'com.example.OracleMemberMapperSmokeTest'
 ```
 
 멀티모듈에서는 실제 대상 모듈 경로를 사용한다. 테스트 리포트는 해당 모듈의 `build/reports/tests/devDbTest/`에서 확인한다. IDE의 Gradle `test --tests` 실행은 일반 `test`의 태그 필터에 의해 대상이 발견되지 않을 수 있으므로 별도 태스크를 사용한다.
 
-**주의:** `BUILD SUCCESSFUL`만으로 실제 Oracle 테스트의 수행 여부를 판단하지 말고 Skip 및 실행 건수를 확인한다.
+**주의:** `testLogging`의 `SKIPPED`/`FAILED` 이벤트로 콘솔에서 결과를 확인할 수 있지만, `BUILD SUCCESSFUL`만으로 실제 Oracle 테스트가 실행되었다고 판단하면 안 된다. 필수 검증에서는 테스트 발견/실행 건수도 확인한다.
 
 ## 6. JaCoCo 제외 정책과 확인 사항
 
@@ -232,20 +262,20 @@ spring:
 | 상황 | 1차 권장 동작 | Gradle 결과 |
 | --- | --- | --- |
 | 일반 `build` | 개발 DB 테스트 실행하지 않음 | H2 테스트 결과로 판정 |
-| `devDbTest`, 연결 설정 없음 | Skip (기본 로컬 정책) | 모든 테스트 Skip이면 성공 가능 |
-| `devDbTest`, TCP 연결 실패 | Skip | 모든 테스트 Skip이면 성공 가능 |
+| `devDbTest`, 연결 설정 없음 | 기본 Skip / `devDb.required=true`에서 Fail | 기본 모드에서 모두 Skip이면 성공 가능 |
+| `devDbTest`, TCP 연결 실패 | 기본 Skip / `devDb.required=true`에서 Fail | 기본 모드에서 모두 Skip이면 성공 가능 |
 | TCP 성공, JDBC 인증/서비스명 오류 | 실제 테스트 Fail | Build Fail |
 | JDBC 성공, SQL/Assertion 오류 | 실제 테스트 Fail | Build Fail |
 | SQL/Assertion 성공 | Pass | Success |
 
-`ignoreFailures=false`는 명시적 테스트 실행 시 결함을 숨기지 않기 위한 기본값이다. `ExecutionCondition`의 Skip은 DB 미접속을 통과시켜도, 검증 결과가 **미실행**임을 숨기지 않도록 별도 보고한다.
+`ignoreFailures=false`는 명시적 테스트 실행 시 결함을 숨기지 않기 위한 기본값이다. `ExecutionCondition`의 Skip은 DB 미접속을 통과시켜도, `testLogging`으로 콘솔에 Skip을 표시한다. 엄격 모드에서는 이 두 상황을 Fail로 전환한다. 단, 테스트가 전혀 발견되지 않는 문제는 별도 검증 대상이다.
 
-후속 단계에서는 접속 사전 확인 중복을 최소화하고, 필수 CI 검증에서 미설정/전부 Skip을 실패 처리한다. CI 파이프라인이 개발 DB 검증 결과를 비차단으로 운영해야 한다면 Gradle에서 결과를 성공으로 위장하기보다, 별도 CI Job(예: GitLab `allow_failure: true`)으로 상태를 보존한다.
+후속 단계에서는 여러 테스트 클래스 간 접속 사전 확인 중복을 최소화한다. 필수 CI 검증에서는 `-PdevDb.required=true`를 사용하고, 테스트 미발견에 대비해 실행 건수도 검증한다. CI 파이프라인이 개발 DB 검증 결과를 비차단으로 운영해야 한다면 Gradle에서 결과를 성공으로 위장하기보다, 별도 CI Job(예: GitLab `allow_failure: true`)으로 상태를 보존한다.
 
 ## 8. 개발 DB 사용 시 안전 수칙
 
-- 가능하면 **조회 전용 계정**과 안정적인 기준 데이터만 이용한다. 개발 DB 접속 자체를 막는 설정과 조회 전용 DB 권한을 함께 적용한다.
-- `spring.batch.job.enabled=false`, `spring.batch.jdbc.initialize-schema=never`를 개발 DB 테스트 프로필에 명시한다. 커스텀 Batch/메타데이터 DataSource 설정까지 점검한다.
+- 가능하면 **조회 전용 계정**과 안정적인 기준 데이터만 이용한다. 애플리케이션 설정으로 쓰기 경로를 제한하고, DB 권한으로도 조회 전용을 강제한다(이중 방어).
+- `spring.sql.init.mode=never`, `spring.batch.job.enabled=false`, `spring.batch.jdbc.initialize-schema=never`를 개발 DB 테스트 프로필에 명시한다. `DataSourceInitializer`/`ResourceDatabasePopulator` 등 다중 DataSource의 커스텀 초기화와 Batch 메타데이터 DataSource도 점검한다.
 - DML 테스트는 전용 스키마·격리된 테스트 데이터·트랜잭션 롤백 및 정리 전략을 별도 설계한다. 단순 `@Transactional`만으로 외부 시스템·다중 DataSource까지 모두 롤백된다고 가정하지 않는다.
 - DB 비밀번호와 연결 문자열의 민감 항목은 환경변수 또는 외부 시크릿 관리로 전달하고 Git에 커밋하지 않는다.
 - 개발 DB 데이터 변동으로 깨지는 특정 ID·건수 단정은 최소화한다.
@@ -258,21 +288,24 @@ spring:
 - [ ] `dev-db` 태그가 일반 `test`에서 제외되고 `devDbTest`는 `check`/`build`에 연결되지 않는지 확인
 - [ ] `@DevDbTest`로 Profile·Tag·ExecutionCondition이 적용되는지 확인
 - [ ] `src/test/resources/application-dev-db.yml`이 로딩되며 H2/다중 DataSource 설정이 올바르게 치환되는지 확인
-- [ ] 개발 DB 접속 설정 누락 또는 네트워크 차단 시 Skip으로 표시되는지 확인
+- [ ] 개발 DB 접속 설정 누락 또는 네트워크 차단 시 기본 Skip, `-PdevDb.required=true`에서 Fail로 처리되는지 확인
+- [ ] 클래스 단위 접속 확인이 테스트 메서드마다 반복되지 않는지 확인
+- [ ] Gradle 콘솔에서 Skip/Fail 이벤트가 출력되는지 확인
 - [ ] JDBC 인증 오류, SQL·Assertion 실패 시 Build Fail인지 확인
 - [ ] 모든 테스트 Skip 시 성공 표시의 의미가 명확히 보고되는지 확인
 - [ ] `devDbTest` 실행 시 JaCoCo 비활성화 및 통합 리포트 제외 확인
 - [ ] 개발 DB 테스트가 없는 모듈에서 0건 발견에 따른 Gradle 9 실패 여부를 확인하고 등록 범위 또는 정책 조정
 - [ ] IDE(Kiro/VS Code 등)에서 `dev-db` 테스트 실행 경로 확인
-- [ ] Spring Batch Job 자동 실행과 메타데이터 자동 생성이 비활성화되는지 확인
+- [ ] Spring Batch Job 자동 실행·메타데이터 자동 생성·Spring SQL 초기화가 비활성화되는지 확인
+- [ ] H2용 DDL/DML 초기화 스크립트가 Oracle DB에서 실행되지 않으며 다중 DataSource의 커스텀 초기화도 안전한지 확인
 - [ ] 읽기 전용 계정과 테스트 데이터 안전성 확인
-- [ ] 필수 CI 검증에서 미실행/전체 Skip을 감지할 별도 정책 결정
+- [ ] 필수 CI 검증에서 `-PdevDb.required=true` 동작과 테스트 0건 발견/실행 감지를 검증
 
 ## 10. 제안 결론
 
-**1차:** 동일 `src/test` 소스셋 + `@DevDbTest` 합성 애너테이션 + 연결 사전 확인 및 Skip + 별도 `devDbTest` 태스크(`ignoreFailures=false`) + JaCoCo 수집 제외 + 테스트 전용 `application-dev-db.yml`을 도입한다. 일반 `build`에는 개발 DB 테스트를 연결하지 않는다.
+**1차:** 동일 `src/test` 소스셋 + `@DevDbTest` 합성 애너테이션 + 클래스 수준 연결 사전 확인 및 Skip(필수 검증 시 Fail) + 별도 `devDbTest` 태스크(`ignoreFailures=false`) + Skip/Fail 콘솔 출력 + JaCoCo 수집 제외 + SQL 초기화 방지를 포함한 테스트 전용 `application-dev-db.yml`을 도입한다. 일반 `build`에는 개발 DB 테스트를 연결하지 않는다.
 
-**2차:** 테스트 규모가 늘어나면 `src/devDbTest` 소스셋 또는 Gradle JVM Test Suite를 검토한다. 연결 확인 캐싱, 테스트 미발견 감지, CI의 필수 검증 단계, 통합·Smoke의 별도 실행 정책을 환경에 맞게 발전시킨다.
+**2차:** 테스트 규모가 늘어나면 `src/devDbTest` 소스셋 또는 Gradle JVM Test Suite를 검토한다. 연결 확인 캐싱, 테스트 미발견/실행 건수 검증, CI의 필수 검증 단계, 통합·Smoke의 별도 실행 정책을 환경에 맞게 발전시킨다.
 
 ## 참고 자료
 
