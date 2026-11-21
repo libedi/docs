@@ -81,12 +81,17 @@ val devDbTest by tasks.registering(Test::class) {
         isEnabled = false
     }
 
+    // Oracle DB 상태는 Gradle의 입력 추적 대상이 아니므로 항상 새로 검증
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
+
     shouldRunAfter(tasks.named("test"))
 }
 ```
 
 - `dev-db` 태그를 일반 `test`에서 제외하고 `devDbTest`를 `check`/`build`에 연결하지 않는 **두 장치**가 기본 빌드를 보호한다.
 - `shouldRunAfter`는 실행 순서만 지정하며 의존성을 만들지 않는다.
+- `devDbTest`는 외부 DB의 가용성·스키마·데이터·권한에 따라 결과가 달라지므로 `outputs.upToDateWhen { false }`와 `outputs.cacheIf { false }`로 이전 실행 결과의 UP-TO-DATE 판정과 빌드 캐시 재사용을 막는다. 이 설정은 일반 H2 `test`에는 적용하지 않는다.
 - 수동으로 `devDbTest`를 실행하면 실제 SQL·Assertion 실패는 빌드 실패가 되어야 하므로 `ignoreFailures`를 끄는 것이 기본이다. 과도기의 임시 비차단이 꼭 필요하면 별도 명시적 정책으로 관리하고, 실패를 숨기지 않는 리포트를 확보한다.
 - Gradle 9에서는 테스트 파일이 있지만 필터를 통과하는 테스트가 없을 때 실패할 수 있다. 태스크를 개발 DB 테스트가 있는 모듈에만 등록하는 것이 우선이다. 모듈별 조건부 태스크 등록이 어렵다면 `failOnNoDiscoveredTests = false`를 선택적으로 검토하되, 태그 오류로 인한 0건 실행을 감추는 위험을 수용할지 결정한다.
 - IDE에서 `dev-db` 테스트를 일반 Gradle `test --tests`로 실행하면 태그 제외로 0건이 될 수 있다. Kiro/VS Code의 Java Test Runner 사용 여부를 확인하고, 확실한 경로로는 `./gradlew :대상모듈:devDbTest --tests '패키지.테스트클래스'`를 사용한다.
@@ -243,7 +248,7 @@ spring:
 
 멀티모듈에서는 실제 대상 모듈 경로를 사용한다. 테스트 리포트는 해당 모듈의 `build/reports/tests/devDbTest/`에서 확인한다. IDE의 Gradle `test --tests` 실행은 일반 `test`의 태그 필터에 의해 대상이 발견되지 않을 수 있으므로 별도 태스크를 사용한다.
 
-**주의:** `testLogging`의 `SKIPPED`/`FAILED` 이벤트로 콘솔에서 결과를 확인할 수 있지만, `BUILD SUCCESSFUL`만으로 실제 Oracle 테스트가 실행되었다고 판단하면 안 된다. 필수 검증에서는 테스트 발견/실행 건수도 확인한다.
+**주의:** `devDbTest`는 매번 새로 실행되도록 증분 판정·빌드 캐시를 비활성화한다. `--rerun-tasks`를 매번 수동으로 붙이는 방식에 의존하지 않는다. `testLogging`의 `SKIPPED`/`FAILED` 이벤트로 콘솔에서 결과를 확인할 수 있지만, `BUILD SUCCESSFUL`만으로 실제 Oracle 테스트가 실행되었다고 판단하면 안 된다. 필수 검증에서는 테스트 발견/실행 건수도 확인한다.
 
 ## 6. JaCoCo 제외 정책과 확인 사항
 
@@ -293,17 +298,19 @@ spring:
 - [ ] Gradle 콘솔에서 Skip/Fail 이벤트가 출력되는지 확인
 - [ ] JDBC 인증 오류, SQL·Assertion 실패 시 Build Fail인지 확인
 - [ ] 모든 테스트 Skip 시 성공 표시의 의미가 명확히 보고되는지 확인
+- [ ] `devDbTest`를 연속 두 번 실행할 때 두 번째가 `UP-TO-DATE` 또는 `FROM-CACHE`로 건너뛰지 않고 실제 실행되는지 확인
+- [ ] 개발 DB 접속 불가로 Skip한 뒤 네트워크 복구 후 재실행 시 실제 테스트가 수행되는지 확인
 - [ ] `devDbTest` 실행 시 JaCoCo 비활성화 및 통합 리포트 제외 확인
 - [ ] 개발 DB 테스트가 없는 모듈에서 0건 발견에 따른 Gradle 9 실패 여부를 확인하고 등록 범위 또는 정책 조정
 - [ ] IDE(Kiro/VS Code 등)에서 `dev-db` 테스트 실행 경로 확인
 - [ ] Spring Batch Job 자동 실행·메타데이터 자동 생성·Spring SQL 초기화가 비활성화되는지 확인
 - [ ] H2용 DDL/DML 초기화 스크립트가 Oracle DB에서 실행되지 않으며 다중 DataSource의 커스텀 초기화도 안전한지 확인
 - [ ] 읽기 전용 계정과 테스트 데이터 안전성 확인
-- [ ] 필수 CI 검증에서 `-PdevDb.required=true` 동작과 테스트 0건 발견/실행 감지를 검증
+- [ ] 필수 CI 검증에서 `-PdevDb.required=true` 동작과 테스트 0건 발견/실행 감지를 검증 (`includeTags`만으로 0건이 된 경우도 포함). `failOnNoDiscoveredTests`만으로 충분하다고 가정하지 않고 실제 Gradle 버전에서 확인
 
 ## 10. 제안 결론
 
-**1차:** 동일 `src/test` 소스셋 + `@DevDbTest` 합성 애너테이션 + 클래스 수준 연결 사전 확인 및 Skip(필수 검증 시 Fail) + 별도 `devDbTest` 태스크(`ignoreFailures=false`) + Skip/Fail 콘솔 출력 + JaCoCo 수집 제외 + SQL 초기화 방지를 포함한 테스트 전용 `application-dev-db.yml`을 도입한다. 일반 `build`에는 개발 DB 테스트를 연결하지 않는다.
+**1차:** 동일 `src/test` 소스셋 + `@DevDbTest` 합성 애너테이션 + 클래스 수준 연결 사전 확인 및 Skip(필수 검증 시 Fail) + 별도 `devDbTest` 태스크(`ignoreFailures=false`, UP-TO-DATE/빌드 캐시 비활성화) + Skip/Fail 콘솔 출력 + JaCoCo 수집 제외 + SQL 초기화 방지를 포함한 테스트 전용 `application-dev-db.yml`을 도입한다. 일반 `build`에는 개발 DB 테스트를 연결하지 않는다.
 
 **2차:** 테스트 규모가 늘어나면 `src/devDbTest` 소스셋 또는 Gradle JVM Test Suite를 검토한다. 연결 확인 캐싱, 테스트 미발견/실행 건수 검증, CI의 필수 검증 단계, 통합·Smoke의 별도 실행 정책을 환경에 맞게 발전시킨다.
 
